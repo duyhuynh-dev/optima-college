@@ -1,0 +1,64 @@
+# Checkpoint A: scheduled ingest + silver DQ; optional BigQuery load when secrets are set.
+# Configure: Repository → Secrets: GCP_PROJECT (id), GCP_SA_JSON (service account JSON).
+# Optional: Repository → Variables: WES_TERM (default 1269 if unset).
+# SA needs: BigQuery Data Editor + Job User on GCP_PROJECT.
+name: Data pipeline
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: data-pipeline-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Repository Variable WES_TERM overrides; else 1269.
+      WES_TERM: ${{ vars.WES_TERM || '1269' }}
+      PYTHONPATH: src
+    defaults:
+      run:
+        working-directory: python-ml
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ingest dependencies
+        run: python3 -m pip install -q "requests>=2.31.0" "beautifulsoup4>=4.12.0"
+
+      - name: Ingest WesMaps → CSV (+ local bronze)
+        run: python3 -m optima_ingest.cli --term "$WES_TERM" --out-dir output
+
+      - name: DQ checks on silver CSVs
+        run: python3 -m optima_ingest.dq_check --term "$WES_TERM" --input-dir output
+
+      - name: Upload silver CSV artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: silver-${{ env.WES_TERM }}
+          path: python-ml/output/*_${{ env.WES_TERM }}.csv
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        if: ${{ secrets.GCP_SA_JSON != '' }}
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_JSON }}
+
+      - name: Load into BigQuery
+        if: ${{ secrets.GCP_SA_JSON != '' && secrets.GCP_PROJECT != '' }}
+        env:
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+        run: |
+          python3 -m pip install -q "google-cloud-bigquery>=3.25.0"
+          python3 -m optima_ingest.bq_load --term "$WES_TERM" --input-dir output

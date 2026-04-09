@@ -1,0 +1,13 @@
+README.md
+pyproject.toml
+src/optima_ingest/__init__.py
+src/optima_ingest/bq_load.py
+src/optima_ingest/cli.py
+src/optima_ingest/models.py
+src/optima_ingest/wesmaps.py
+src/optima_python_ml.egg-info/PKG-INFO
+src/optima_python_ml.egg-info/SOURCES.txt
+src/optima_python_ml.egg-info/dependency_links.txt
+src/optima_python_ml.egg-info/requires.txt
+src/optima_python_ml.egg-info/top_level.txt
+tests/test_wesmaps_parser.py

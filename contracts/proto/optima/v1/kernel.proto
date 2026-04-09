@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package optima.v1;
+
+option go_package = "optima/go-orchestrator/internal/gen/optima/v1;optimav1";
+
+// Kernel exposes schedule conflict detection and full local optimization over CSV inputs.
+service Kernel {
+  rpc CheckConflicts(CheckConflictsRequest) returns (CheckConflictsResponse);
+  rpc Optimize(OptimizeRequest) returns (OptimizeResponse);
+  rpc Health(Empty) returns (HealthResponse);
+}
+
+message Empty {}
+
+message HealthResponse {
+  string status = 1;
+  string service = 2;
+}
+
+message ConflictPair {
+  string day_code = 1;
+  string day_name = 2;
+  string left_section = 3;
+  string right_section = 4;
+  string left_start = 5;
+  string left_end = 6;
+  string right_start = 7;
+  string right_end = 8;
+}
+
+message CheckConflictsRequest {
+  // Path to meetings_*.csv; if empty, server default is used.
+  string csv_path = 1;
+  repeated string sections = 2;
+}
+
+message CheckConflictsResponse {
+  string status = 1;
+  bool has_conflict = 2;
+  uint32 conflict_count = 3;
+  repeated ConflictPair conflicts = 4;
+}
+
+message ScoreWeights {
+  double w_weekly = 1;
+  double w_evening = 2;
+  double w_early = 3;
+  double w_back_to_back = 4;
+  double w_busy_day = 5;
+}
+
+message OptimizeRequest {
+  string sections_csv_path = 1;
+  string meetings_csv_path = 2;
+  int32 k = 3;
+  int32 max_results = 4;
+  int32 max_per_subject = 5;
+  int32 earliest_start_minutes = 6;
+  repeated string subject_whitelist = 7;
+  repeated string subject_blacklist = 8;
+  ScoreWeights weights = 9;
+  bool pareto = 10;
+  string pareto_mode = 11;
+  double pareto_epsilon = 12;
+  int32 max_candidates = 13;
+}
+
+message ScheduleOption {
+  string id = 1;
+  repeated string sections = 2;
+  double expected_utility = 3;
+  double stress_score = 4;
+  double academic_load_score = 5;
+  double lifestyle_penalty_score = 6;
+}
+
+message OptimizeResponse {
+  string status = 1;
+  string reason = 2;
+  repeated ScheduleOption options = 3;
+  ScoreWeights effective_weights = 4;
+}

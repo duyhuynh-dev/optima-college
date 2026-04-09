@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project]
+name = "optima-python-ml"
+version = "0.1.0"
+description = "Optima data ingestion and ML workspace"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "beautifulsoup4>=4.12.0",
+  "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+  "ruff>=0.6.0",
+]
+bq = [
+  "google-cloud-bigquery>=3.25.0",
+]
+gcs = [
+  "google-cloud-storage>=2.14.0",
+]
+checkpoint_a = [
+  "google-cloud-bigquery>=3.25.0",
+  "google-cloud-storage>=2.14.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
