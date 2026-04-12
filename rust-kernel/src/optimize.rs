@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::conflicts::{detect_conflicts, load_meetings_from_csv, parse_time_to_minutes, MeetingRecord};
+use crate::weekly_bitmap::{MeetingBlock, WeeklyOccupancy};
 
 #[derive(Debug, Clone)]
 pub struct ScoreWeights {
@@ -58,13 +59,6 @@ struct SectionRow {
     section: String,
     #[serde(default = "default_section_credits")]
     credits: f64,
-}
-
-#[derive(Clone)]
-struct MeetingBlock {
-    day_code: String,
-    start_min: i32,
-    end_min: i32,
 }
 
 fn default_weights() -> ScoreWeights {
@@ -293,24 +287,6 @@ fn section_passes_earliest(section_id: &str, earliest: i32, starts: &HashMap<Str
     starts.get(section_id).copied().unwrap_or(0) >= earliest
 }
 
-/// Half-open-style overlap consistent with kernel conflict scan: intervals clash iff each starts before the other ends.
-#[inline]
-fn meeting_intervals_overlap(s1: i32, e1: i32, s2: i32, e2: i32) -> bool {
-    s1 < e2 && s2 < e1
-}
-
-/// True if any meeting on `new_blocks` overlaps any meeting already placed (same `day_code`).
-fn blocks_time_conflict(existing: &[MeetingBlock], new_blocks: &[MeetingBlock]) -> bool {
-    for a in existing {
-        for b in new_blocks {
-            if a.day_code == b.day_code && meeting_intervals_overlap(a.start_min, a.end_min, b.start_min, b.end_min) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 fn stack_total_credits(stack: &[SectionRow]) -> f64 {
     stack.iter().map(|r| r.credits).sum()
 }
@@ -366,7 +342,7 @@ fn dfs_collect(
     prereqs: &HashMap<String, Vec<Vec<String>>>,
     start: usize,
     stack: &mut Vec<SectionRow>,
-    stack_meetings: &mut Vec<MeetingBlock>,
+    occ: &mut WeeklyOccupancy,
     results: &mut Vec<ScheduleOption>,
     seen: &mut HashSet<String>,
 ) {
@@ -427,11 +403,9 @@ fn dfs_collect(
             .get(&section_id)
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
-        if blocks_time_conflict(stack_meetings, new_blocks) {
+        if !occ.try_add_blocks(new_blocks) {
             continue;
         }
-        let prev_m = stack_meetings.len();
-        stack_meetings.extend_from_slice(new_blocks);
         stack.push(row.clone());
         dfs_collect(
             pool,
@@ -446,12 +420,12 @@ fn dfs_collect(
             prereqs,
             i + 1,
             stack,
-            stack_meetings,
+            occ,
             results,
             seen,
         );
         stack.pop();
-        stack_meetings.truncate(prev_m);
+        occ.remove_blocks(new_blocks);
         if results.len() >= max_candidates {
             return;
         }
@@ -473,7 +447,7 @@ fn candidates_for_seed(
 ) -> Vec<ScheduleOption> {
     let pool = rotate_rows(rows, seed);
     let mut stack: Vec<SectionRow> = Vec::with_capacity(k);
-    let mut stack_meetings: Vec<MeetingBlock> = Vec::new();
+    let mut occ = WeeklyOccupancy::new();
     let mut results: Vec<ScheduleOption> = Vec::with_capacity(max_candidates.min(256));
     let mut seen: HashSet<String> = HashSet::with_capacity(max_candidates);
     dfs_collect(
@@ -489,7 +463,7 @@ fn candidates_for_seed(
         prereqs,
         0,
         &mut stack,
-        &mut stack_meetings,
+        &mut occ,
         &mut results,
         &mut seen,
     );
@@ -1006,6 +980,7 @@ mod credit_bounds_tests {
 #[cfg(test)]
 mod interval_prune_tests {
     use super::*;
+    use crate::weekly_bitmap::WeeklyOccupancy;
 
     fn blk(day: &str, s: i32, e: i32) -> MeetingBlock {
         MeetingBlock {
@@ -1016,18 +991,17 @@ mod interval_prune_tests {
     }
 
     #[test]
-    fn meeting_intervals_overlap_matches_conflict_semantics() {
-        assert!(meeting_intervals_overlap(530, 610, 570, 620)); // 8:50–10:10 vs 9:30–10:20
-        assert!(!meeting_intervals_overlap(480, 540, 540, 600)); // adjacent: 8:00–9:00 vs 9:00–10:00
-        assert!(!meeting_intervals_overlap(480, 540, 600, 660)); // different bands same day
-    }
-
-    #[test]
-    fn blocks_time_conflict_respects_day_and_overlap() {
-        let existing = vec![blk("T", 530, 610)];
-        assert!(blocks_time_conflict(&existing, &[blk("T", 570, 620)]));
-        assert!(!blocks_time_conflict(&existing, &[blk("T", 620, 660)]));
-        assert!(!blocks_time_conflict(&existing, &[blk("R", 570, 620)]));
+    fn weekly_bitmap_matches_half_open_overlap_semantics() {
+        let mut occ = WeeklyOccupancy::new();
+        assert!(occ.try_add_blocks(&[blk("T", 530, 610)]));
+        assert!(!occ.try_add_blocks(&[blk("T", 570, 620)])); // overlap
+        occ.remove_blocks(&[blk("T", 530, 610)]);
+        assert!(occ.try_add_blocks(&[blk("T", 480, 540)]));
+        assert!(occ.try_add_blocks(&[blk("T", 540, 600)])); // adjacent, no overlap
+        occ.remove_blocks(&[blk("T", 480, 540)]);
+        occ.remove_blocks(&[blk("T", 540, 600)]);
+        assert!(occ.try_add_blocks(&[blk("T", 480, 540)]));
+        assert!(occ.try_add_blocks(&[blk("T", 600, 660)])); // gap, no overlap
     }
 
     #[test]

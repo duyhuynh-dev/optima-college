@@ -58,10 +58,11 @@ otel-jaeger:
 otel-jaeger-down:
 	docker compose down
 
-# Local parity with .github/workflows/ci.yml
+# Local parity with .github/workflows/ci.yml (Rust + Go + Python pytest)
 ci:
 	cd rust-kernel && cargo test
 	cd go-orchestrator && go test ./... -count=1
+	cd python-ml && python3 -m pip install -q -e ".[dev]" && python3 -m pytest tests/ -q
 
 # Install BigQuery client only (no editable install — avoids old pip + incomplete pyproject issues).
 bq-load:

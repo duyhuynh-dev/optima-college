@@ -31,7 +31,7 @@ You can tune generation with query params, for example:
 
 Hard **credit load** (Phase 2): optional `min_total_credits` and `max_total_credits` bound the sum of per-row `credits` in the sections CSV (ingest writes `1.0` by default until real credit values are parsed). Re-run `make ingest` if your CSV predates the `credits` column.
 
-**Prerequisites** (Phase 2): `courses_<term>.csv` column **`prereq_groups`** — JSON array of OR-clauses, AND across clauses (e.g. `[["MATH120","MATH121"]]` means at least one of those codes if the student takes the course). **`make ingest`** writes `[]`; run **`make ingest-enrich`** (many HTTP requests) to fill credits + prereqs from WesMaps course-detail pages. The Rust kernel and Go **`legacy=1`** path enforce **transitive** closure: for each clause you must pick an alternative that appears in the schedule and whose own prerequisite groups are satisfied (so a chain like COMP300 → COMP200 → COMP112 requires all three unless prior credit is modeled elsewhere). Candidate generation **prunes time conflicts early** by checking meeting intervals (same `day_code`, overlapping minutes) as sections are added to the DFS stack, so fewer impossible combinations reach the final pass. **`CheckConflicts`** and the kernel HTTP conflict endpoint compare **all meeting pairs per day** (not only consecutive slots after sorting), so non-adjacent overlaps are still reported.
+**Prerequisites** (Phase 2): `courses_<term>.csv` column **`prereq_groups`** — JSON array of OR-clauses, AND across clauses (e.g. `[["MATH120","MATH121"]]` means at least one of those codes if the student takes the course). **`make ingest`** writes `[]`; run **`make ingest-enrich`** (many HTTP requests) to fill credits + prereqs from WesMaps course-detail pages. The Rust kernel and Go **`legacy=1`** path enforce **transitive** closure: for each clause you must pick an alternative that appears in the schedule and whose own prerequisite groups are satisfied (so a chain like COMP300 → COMP200 → COMP112 requires all three unless prior credit is modeled elsewhere). Candidate generation **prunes time conflicts early** using **per-day minute bitmaps** (half-open `[start, end)` minutes) as sections are added to the DFS stack, so fewer impossible combinations reach the final pass. **`CheckConflicts`** and the kernel HTTP conflict endpoint compare **all meeting pairs per day** (not only consecutive slots after sorting), so non-adjacent overlaps are still reported.
 
 `expected_utility` and `stress_score` are computed from `python-ml/output/meetings_1269.csv`: weekly contact time, evening load (starts from 5:00 PM), early-morning load (before 9:00 AM), back-to-back blocks (gap under 12 minutes), and busiest day. Utility is `1 - stress` after blending those signals (caps normalize each term to roughly 0–1).
 
@@ -103,15 +103,15 @@ Stop Jaeger: `make otel-jaeger-down`. You can point the same env vars at any OTL
 | Area | Done | Next |
 |------|------|------|
 | **Data** | WesMaps → CSV ingest (`make ingest`), sections/meetings for scoring, BQ load path | **`make pipeline`** + DQ (`make dq`); daily job in [`.github/workflows/data-pipeline.yml`](.github/workflows/data-pipeline.yml) |
-| **Rust kernel** | HTTP conflicts, gRPC `Optimize` (credits + direct prereqs, Rayon scoring / conflict scan / seeds), OTLP traces | Optional: more unit tests around `optimize` |
-| **Go orchestrator** | `/v1/schedules` (prefers kernel `Optimize` via gRPC; `legacy=1` fallback), OTLP, smoke tests | More integration tests (with kernel / fixtures) |
+| **Rust kernel** | HTTP + gRPC `CheckConflicts` / `Optimize`: credits, transitive **`prereq_groups`**, bitset DFS pruning, pairwise conflict scan, Rayon, Pareto, Criterion bench | Prior-credit modeling; optional CI perf regression budget |
+| **Go orchestrator** | `/v1/schedules` (gRPC `Optimize`; `legacy=1` path matches kernel pruning/prereqs), OTLP, tests | Integration tests with running kernel; circuit breaker / cache (Phase 3) |
 | **Contracts** | `kernel.proto` (`CheckConflicts`, `Optimize`, `Health`) | Evolve as new RPCs are added |
 | **Observability** | Jaeger `docker-compose`, shared OTLP/HTTP `:4318` | Production collector / dashboards |
-| **CI** | [GitHub Actions](.github/workflows/ci.yml): `cargo test` + `go test` on push/PR | Optional: Python ingest in CI, `buf`/`protoc` lint for protos |
+| **CI** | [GitHub Actions](.github/workflows/ci.yml): Rust (`cargo test`, bench compile), Go tests, **Python `pytest`** | `buf`/`protoc` lint; optional perf gates |
 
-**Where we are:** core path is working end-to-end (ingest → kernel + orchestrator → schedules). CI guards Rust and Go tests on every push/PR. **`TestSchedulesHandler_Smoke`** skips if CSVs are missing (run `make ingest` locally for full coverage).
+**Where we are:** **Phase 2 MVP / Checkpoint B** is closed in code (see [`docs/ROADMAP.md`](docs/ROADMAP.md)). End-to-end: ingest → kernel + orchestrator → schedules. CI runs Rust, Go, and Python unit tests. **`TestSchedulesHandler_Smoke`** still skips if CSVs are missing (run `make ingest` locally for full HTTP smoke).
 
-**Suggested next focus (roadmap):** finish **Checkpoint A** — wire **GitHub secrets** for `data-pipeline.yml` if you want automated BQ loads; add **GCS bronze** and stronger **DQ** as needed.
+**Suggested next focus:** **Phase 3** orchestration (circuit breaker, Redis, richer proto) or operational hardening (BQ secrets, DQ)—pick from the roadmap’s suggested actions.
 
 ## Next engineering steps (detail)
 

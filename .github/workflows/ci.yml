@@ -43,3 +43,22 @@ jobs:
 
       - name: go test
         run: go test ./... -count=1 -v
+
+  python-ml:
+    name: Python ML (ingest tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python-ml
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: pip install + pytest
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[dev]"
+          python -m pytest tests/ -v

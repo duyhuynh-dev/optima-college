@@ -2,5 +2,6 @@
 
 pub mod conflicts;
 pub mod grpc;
+mod weekly_bitmap;
 pub mod optimize;
 pub mod telemetry;

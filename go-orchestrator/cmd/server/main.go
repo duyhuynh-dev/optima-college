@@ -607,20 +607,9 @@ func sectionPassesEarliestStart(sectionID string, earliestStart int, starts map[
 	return start >= earliestStart
 }
 
-// intervalsOverlap matches kernel DFS pruning: two meetings clash iff each starts before the other ends.
+// intervalsOverlap matches kernel pruning: two meetings clash iff each starts before the other ends.
 func intervalsOverlap(s1, e1, s2, e2 int) bool {
 	return s1 < e2 && s2 < e1
-}
-
-func blocksTimeConflict(existing, newBlocks []meetingBlock) bool {
-	for _, a := range existing {
-		for _, b := range newBlocks {
-			if a.DayCode == b.DayCode && intervalsOverlap(a.StartMin, a.EndMin, b.StartMin, b.EndMin) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func rotateRows(rows []sectionRow, offset int) []sectionRow {
@@ -812,7 +801,7 @@ func buildCombinationalCandidates(rows []sectionRow, k, maxCandidates int, earli
 	for _, seed := range seeds {
 		pool := rotateRows(rows, seed)
 		stack := make([]sectionRow, 0, k)
-		stackMeetings := make([]meetingBlock, 0, k*6)
+		occ := newWeeklyTimeBitmap()
 
 		var dfs func(start int)
 		dfs = func(start int) {
@@ -859,15 +848,13 @@ func buildCombinationalCandidates(rows []sectionRow, k, maxCandidates int, earli
 					continue
 				}
 				newBlocks := bySection[sectionID]
-				if blocksTimeConflict(stackMeetings, newBlocks) {
+				if !occ.tryAddBlocks(newBlocks) {
 					continue
 				}
-				prevM := len(stackMeetings)
-				stackMeetings = append(stackMeetings, newBlocks...)
 				stack = append(stack, row)
 				dfs(i + 1)
 				stack = stack[:len(stack)-1]
-				stackMeetings = stackMeetings[:prevM]
+				occ.removeBlocks(newBlocks)
 				if len(results) >= maxCandidates {
 					return
 				}

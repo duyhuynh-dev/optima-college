@@ -54,16 +54,24 @@ func TestIntervalsOverlap(t *testing.T) {
 	}
 }
 
-func TestBlocksTimeConflict(t *testing.T) {
+func TestWeeklyTimeBitmap_overlapSemantics(t *testing.T) {
 	t.Parallel()
-	existing := []meetingBlock{{DayCode: "T", StartMin: 530, EndMin: 610}}
-	if !blocksTimeConflict(existing, []meetingBlock{{DayCode: "T", StartMin: 570, EndMin: 620}}) {
+	occ := newWeeklyTimeBitmap()
+	a := []meetingBlock{{DayCode: "T", StartMin: 530, EndMin: 610}}
+	if !occ.tryAddBlocks(a) {
+		t.Fatal("first add should succeed")
+	}
+	if occ.tryAddBlocks([]meetingBlock{{DayCode: "T", StartMin: 570, EndMin: 620}}) {
 		t.Fatal("expected overlap on same day")
 	}
-	if blocksTimeConflict(existing, []meetingBlock{{DayCode: "T", StartMin: 620, EndMin: 660}}) {
+	if !occ.tryAddBlocks([]meetingBlock{{DayCode: "T", StartMin: 620, EndMin: 660}}) {
 		t.Fatal("non-overlapping same day should pass")
 	}
-	if blocksTimeConflict(existing, []meetingBlock{{DayCode: "R", StartMin: 570, EndMin: 620}}) {
+	occ2 := newWeeklyTimeBitmap()
+	if !occ2.tryAddBlocks(a) {
+		t.Fatal("setup")
+	}
+	if !occ2.tryAddBlocks([]meetingBlock{{DayCode: "R", StartMin: 570, EndMin: 620}}) {
 		t.Fatal("different day should pass")
 	}
 }

@@ -20,11 +20,11 @@ This document is the **structured program plan**. Last reviewed: 2026-04-11.
 |------------|-------------|
 | **0** | 🟡 Repo layout, `Makefile`, CI, protobuf, Jaeger + OTLP. PR template + branching in [`CONTRIBUTING.md`](../CONTRIBUTING.md). Missing: issue tracker choice, Terraform, KPI dashboard skeleton. |
 | **1** | 🟡 **Checkpoint A closed (ops).** Ingest → CSV + bronze; **GCS** `make gcs-bronze`; **BQ** + scheduled [`data-pipeline.yml`](../.github/workflows/data-pipeline.yml) + `dq_check`. Full entity DDL / alerting still future. |
-| **2** | 🟡 Combinatorial search + **credit totals** + **`prereq_groups`** JSON (AND-of-OR; **`make ingest-enrich`** fills from WesMaps) + **Rayon** in `optimize`; **Pareto**. No **bitset** engine or **transitive** prereq closure yet. |
+| **2** | ✅ **Checkpoint B (MVP).** Credits + **`prereq_groups`** + **transitive** prereq enforcement + **Rayon** + **Pareto** + **bitset-backed** weekly minute maps for DFS time pruning (Rust + Go legacy) + full pairwise **`detect_conflicts`** + **Criterion** bench (`cargo bench --no-run` in CI). *Out of scope for this checkpoint:* prior completed-course credit, co-reqs as first-class constraints, automated perf regression thresholds in CI. |
 | **3** | 🟡 gRPC `CheckConflicts` + `Optimize`, Go gateway, degraded **legacy** path. Missing: richer proto (weights/explanations in one shot was partially done), circuit breaker, Redis. |
 | **4–8** | ⬜ Not started (NL intent, workload ML, frontend, pilot). |
 
-**Verdict:** Data → Rust kernel → Go API + observability matches the plan. **Phase 1 checkpoint A** met for pipeline + minimal DQ. **Phase 2** is **staged**: credit bounds, **direct** prerequisite edges, Rayon parallelism; **transitive prereqs**, **bitset pruning**, and **formal perf baselines** still open.
+**Verdict:** Data → Rust kernel → Go API + observability matches the plan. **Phase 1 checkpoint A** met for pipeline + minimal DQ. **Phase 2 checkpoint B** is met for the **scoped MVP** (hard constraints + multi-objective slice); remaining modeling depth (prior credit, richer catalog entities, CI perf gates) is **Phase 3+ polish** or product policy, not blockers for leaving Phase 2.
 
 ---
 
@@ -84,13 +84,13 @@ This document is the **structured program plan**. Last reviewed: 2026-04-11.
 
 | What we do | Progress | Notes |
 |------------|----------|--------|
-| Hard constraints: no time conflicts | ✅ | Kernel conflict detection + Optimize filters conflict-free sets. |
-| Credit min/max, no classes before X, subjects | 🟡 | **Total credit min/max** + **`prereq_groups`** JSON (AND of OR-clauses) on courses CSV; optional **`make ingest-enrich`** fills from WesMaps detail pages. **Transitive** closure not computed. “Before X” via query param. |
-| Pruning before enumeration | 🟡 | DFS + caps + seeds; not bitset indexing yet. |
-| Parallel search + performance baseline | 🟡 | **Rayon:** parallel seed DFS merge, parallel scoring, parallel conflict checks. Formal benches / CI perf gates still TBD. |
-| Multi-objective + Pareto | 🟡 | Scoring + Pareto / epsilon in orchestrator + `Optimize`. |
+| Hard constraints: no time conflicts | ✅ | Pairwise-per-day **`detect_conflicts`**; Optimize final pass + DFS **bitset** pruning (minute maps per `day_code`). |
+| Credit min/max, no classes before X, subjects | ✅ | **Total credit min/max** + **`prereq_groups`** JSON; **transitive** prereq satisfaction in Rust + Go legacy; optional **`make ingest-enrich`** for WesMaps-backed credits/prereqs. “Before X” via query param. *Prior credit / waivers not modeled.* |
+| Pruning before enumeration | ✅ | DFS + caps + seeds + **weekly bitset** occupancy (1440 min/day) in Rust + Go legacy. |
+| Parallel search + performance baseline | ✅ | **Rayon** (seeds, scoring, conflict scan). **Criterion** `optimize` bench + **`cargo bench --no-run`** in CI. *No numeric regression budget in CI yet—run `cargo bench` locally for comparisons.* |
+| Multi-objective + Pareto | ✅ | Scoring + strict / epsilon Pareto in orchestrator + kernel `Optimize`. |
 
-**Checkpoint B (end Week 4):** solver returns valid sets with hard constraints → **partially** (conflicts + **total credits** + **direct prereqs** yes; **transitive** prereqs / bitset engine still open).
+**Checkpoint B (end Week 4):** solver returns valid sets with hard constraints for the **MVP scope** above → **✅ closed** (see honest snapshot row for Phase 2).
 
 ---
 
@@ -188,7 +188,7 @@ This document is the **structured program plan**. Last reviewed: 2026-04-11.
 | Risk | Status |
 |------|--------|
 | HTML / source format changes | 🟡 Mitigate with snapshots + versioning when pipeline moves to cloud. |
-| Solver complexity | 🟡 Staged features; benchmarks TBD. |
+| Solver complexity | 🟡 Staged features; **Criterion** bench exists; CI compiles it, no auto regression gate. |
 | Sparse ML outcomes | ⬜ N/A until models. |
 | AI invalid constraints | ⬜ Validator gate when NL layer exists. |
 
@@ -196,9 +196,9 @@ This document is the **structured program plan**. Last reviewed: 2026-04-11.
 
 ## Suggested next actions (pick order)
 
-1. **Phase 2 (in progress):** **transitive** prerequisite closure (or richer catalog) + **bitset / interval** pruning; **performance baselines** (criterion bench or CI threshold).
+1. **Phase 3 (orchestration hardening):** circuit breaker, Redis/cache, richer proto (explanations in one response); optional **CI perf budget** for `cargo bench` if regressions become a risk.
 2. **Tighten Phase 0:** optional KPI stub (Grafana folder) when you want visibility beyond Jaeger.
-3. **Phase 3:** circuit breaker, Redis/cache, richer proto (explanations in one response).
+3. **Product / data depth:** prior completed-course credit in the solver; co-reqs / cross-list rules; stronger DQ or **buf**/**protoc** lint in CI.
 4. **Phase 6:** Prometheus + SLOs when you have a persistent deployment.
 
 ---
