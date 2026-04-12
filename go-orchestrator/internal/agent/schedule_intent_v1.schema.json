@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://optima.local/agent/schedule_intent_v1.schema.json",
+  "title": "ScheduleIntentV1",
+  "description": "Structured output the LLM must emit for Optima schedule planning (versioned).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "clarification_needed"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "schedule_intent_v1"
+    },
+    "clarification_needed": {
+      "type": "boolean",
+      "description": "If true, ask the user questions before running the optimizer; schedules should not be trusted."
+    },
+    "clarification_questions": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 280
+      }
+    },
+    "intent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Parameters for the internal schedule search (mapped to /v1/schedules query). Omit fields to use server defaults.",
+      "properties": {
+        "k": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 6
+        },
+        "max_results": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 25
+        },
+        "earliest_start": {
+          "type": "string",
+          "maxLength": 16,
+          "description": "12h time e.g. 9:00AM, 10:00AM"
+        },
+        "max_per_subject": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "min_total_credits": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 40,
+          "description": "Hard lower bound on sum of section credits (0 = omit). Sections CSV must include credits column."
+        },
+        "max_total_credits": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 40,
+          "description": "Hard upper bound on sum of section credits (0 = omit)."
+        },
+        "subject_whitelist": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 8
+          }
+        },
+        "subject_blacklist": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 8
+          }
+        },
+        "debug": {
+          "type": "boolean"
+        },
+        "pareto": {
+          "type": "boolean"
+        },
+        "pareto_mode": {
+          "type": "string",
+          "enum": ["strict", "epsilon"]
+        },
+        "pareto_epsilon": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.25
+        },
+        "weights": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "weekly": { "type": "number", "minimum": 0, "maximum": 10 },
+            "evening": { "type": "number", "minimum": 0, "maximum": 10 },
+            "early": { "type": "number", "minimum": 0, "maximum": 10 },
+            "back_to_back": { "type": "number", "minimum": 0, "maximum": 10 },
+            "busy_day": { "type": "number", "minimum": 0, "maximum": 10 }
+          }
+        },
+        "legacy": {
+          "type": "boolean",
+          "description": "If true, maps to legacy=1 on internal schedule call (kernel optimize off)."
+        }
+      }
+    },
+    "assumptions_made": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "string",
+        "maxLength": 400
+      }
+    },
+    "rationale": {
+      "type": "string",
+      "maxLength": 2000,
+      "description": "Short explanation for the structured panel (no raw catalog rows)."
+    }
+  }
+}

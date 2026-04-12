@@ -1,9 +1,11 @@
 //! Local schedule optimization: candidate generation, scoring (aligned with Go orchestrator), and conflict filtering.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use rayon::prelude::*;
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::conflicts::{detect_conflicts, load_meetings_from_csv, parse_time_to_minutes, MeetingRecord};
 
@@ -39,6 +41,14 @@ pub struct OptimizeParams {
     pub pareto_mode: String,
     pub pareto_epsilon: f64,
     pub max_candidates: i32,
+    /// Hard lower bound on sum of selected section credits; `0` = disabled.
+    pub min_total_credits: f64,
+    /// Hard upper bound on sum of selected section credits; `0` = disabled.
+    pub max_total_credits: f64,
+}
+
+fn default_section_credits() -> f64 {
+    1.0
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -46,6 +56,8 @@ struct SectionRow {
     subject_code: String,
     course_code: String,
     section: String,
+    #[serde(default = "default_section_credits")]
+    credits: f64,
 }
 
 #[derive(Clone)]
@@ -82,6 +94,96 @@ pub fn normalize_weights(w: ScoreWeights) -> ScoreWeights {
 fn round_float(v: f64, places: i32) -> f64 {
     let p = 10_f64.powi(places);
     (v * p).round() / p
+}
+
+#[derive(Debug, Deserialize)]
+struct CourseCsvRow {
+    course_code: String,
+    #[serde(default)]
+    prereq_groups: String,
+}
+
+fn normalize_prereq_clauses(raw: &str) -> Result<Vec<Vec<String>>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "[]" {
+        return Ok(Vec::new());
+    }
+    let v: Value = serde_json::from_str(trimmed).map_err(|e| format!("prereq_groups json: {e}"))?;
+    let arr = v.as_array().ok_or_else(|| "prereq_groups must be a JSON array".to_string())?;
+    let mut out: Vec<Vec<String>> = Vec::with_capacity(arr.len());
+    for item in arr {
+        let inner = item.as_array().ok_or_else(|| "prereq_groups clause must be array".to_string())?;
+        let mut g: Vec<String> = Vec::new();
+        for x in inner {
+            let s = x
+                .as_str()
+                .ok_or_else(|| "prereq_groups code must be string".to_string())?
+                .trim()
+                .to_uppercase();
+            if !s.is_empty() && !g.contains(&s) {
+                g.push(s);
+            }
+        }
+        if !g.is_empty() {
+            out.push(g);
+        }
+    }
+    Ok(out)
+}
+
+fn load_prereq_clauses_map(path: &Path) -> Result<HashMap<String, Vec<Vec<String>>>, String> {
+    let mut reader = csv::Reader::from_path(path)
+        .map_err(|e| format!("failed to open courses csv {}: {e}", path.display()))?;
+    let mut out: HashMap<String, Vec<Vec<String>>> = HashMap::new();
+    for row in reader.deserialize::<CourseCsvRow>() {
+        let row = row.map_err(|e| format!("courses csv row: {e}"))?;
+        let code = row.course_code.trim().to_uppercase();
+        if code.is_empty() {
+            continue;
+        }
+        let clauses = normalize_prereq_clauses(&row.prereq_groups)?;
+        out.insert(code, clauses);
+    }
+    Ok(out)
+}
+
+fn companion_courses_csv(sections_path: &Path) -> Option<PathBuf> {
+    let name = sections_path.file_name()?.to_str()?;
+    let rest = name.strip_prefix("sections_")?;
+    let term = rest.strip_suffix(".csv")?;
+    let p = sections_path.parent()?.join(format!("courses_{term}.csv"));
+    if p.is_file() {
+        Some(p)
+    } else {
+        None
+    }
+}
+
+fn schedule_satisfies_prereq_groups(
+    selected_courses: &HashSet<String>,
+    by_course: &HashMap<String, Vec<Vec<String>>>,
+) -> bool {
+    for course in selected_courses.iter() {
+        let Some(clauses) = by_course.get(course) else {
+            continue;
+        };
+        for or_group in clauses {
+            if or_group.is_empty() {
+                continue;
+            }
+            let mut any = false;
+            for code in or_group {
+                if selected_courses.contains(code) {
+                    any = true;
+                    break;
+                }
+            }
+            if !any {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn load_sections_csv(path: &Path, max_rows: usize) -> Result<Vec<SectionRow>, String> {
@@ -149,6 +251,21 @@ fn section_passes_earliest(section_id: &str, earliest: i32, starts: &HashMap<Str
     starts.get(section_id).copied().unwrap_or(0) >= earliest
 }
 
+fn stack_total_credits(stack: &[SectionRow]) -> f64 {
+    stack.iter().map(|r| r.credits).sum()
+}
+
+fn passes_credit_bounds(total: f64, min_c: f64, max_c: f64) -> bool {
+    const EPS: f64 = 1e-6;
+    if min_c > EPS && total + EPS < min_c {
+        return false;
+    }
+    if max_c > EPS && total > max_c + EPS {
+        return false;
+    }
+    true
+}
+
 fn rotate_rows(rows: &[SectionRow], offset: usize) -> Vec<SectionRow> {
     if rows.is_empty() {
         return Vec::new();
@@ -176,6 +293,131 @@ fn assign_schedule_ids(mut options: Vec<ScheduleOption>) -> Vec<ScheduleOption> 
     options
 }
 
+fn dfs_collect(
+    pool: &[SectionRow],
+    k: usize,
+    max_candidates: usize,
+    earliest_start: i32,
+    max_per_subject: usize,
+    starts: &HashMap<String, i32>,
+    min_total_credits: f64,
+    max_total_credits: f64,
+    prereqs: &HashMap<String, Vec<Vec<String>>>,
+    start: usize,
+    stack: &mut Vec<SectionRow>,
+    results: &mut Vec<ScheduleOption>,
+    seen: &mut HashSet<String>,
+) {
+    if results.len() >= max_candidates {
+        return;
+    }
+    if stack.len() == k {
+        let mut sections = Vec::with_capacity(k);
+        for row in stack.iter() {
+            let section_id = format!("{}-{}", row.course_code, row.section);
+            if !section_passes_earliest(&section_id, earliest_start, starts) {
+                return;
+            }
+            sections.push(section_id);
+        }
+        if !passes_credit_bounds(stack_total_credits(stack), min_total_credits, max_total_credits) {
+            return;
+        }
+        let mut course_set: HashSet<String> = HashSet::with_capacity(k);
+        for row in stack.iter() {
+            course_set.insert(row.course_code.trim().to_uppercase());
+        }
+        if !schedule_satisfies_prereq_groups(&course_set, prereqs) {
+            return;
+        }
+        let key = unique_key_from_sections(&sections);
+        if seen.contains(&key) {
+            return;
+        }
+        seen.insert(key);
+        results.push(ScheduleOption {
+            id: String::new(),
+            sections,
+            expected_utility: 0.0,
+            stress_score: 0.0,
+            academic_load_score: 0.0,
+            lifestyle_penalty_score: 0.0,
+        });
+        return;
+    }
+
+    let mut used_course: HashSet<String> = HashSet::new();
+    let mut subject_counts: HashMap<String, usize> = HashMap::new();
+    for row in stack.iter() {
+        used_course.insert(row.course_code.clone());
+        *subject_counts.entry(row.subject_code.clone()).or_insert(0) += 1;
+    }
+
+    for i in start..pool.len() {
+        let row = &pool[i];
+        if used_course.contains(&row.course_code) {
+            continue;
+        }
+        if subject_counts.get(&row.subject_code).copied().unwrap_or(0) >= max_per_subject {
+            continue;
+        }
+        stack.push(row.clone());
+        dfs_collect(
+            pool,
+            k,
+            max_candidates,
+            earliest_start,
+            max_per_subject,
+            starts,
+            min_total_credits,
+            max_total_credits,
+            prereqs,
+            i + 1,
+            stack,
+            results,
+            seen,
+        );
+        stack.pop();
+        if results.len() >= max_candidates {
+            return;
+        }
+    }
+}
+
+fn candidates_for_seed(
+    rows: &[SectionRow],
+    seed: usize,
+    k: usize,
+    max_candidates: usize,
+    earliest_start: i32,
+    max_per_subject: usize,
+    starts: &HashMap<String, i32>,
+    min_total_credits: f64,
+    max_total_credits: f64,
+    prereqs: &HashMap<String, Vec<Vec<String>>>,
+) -> Vec<ScheduleOption> {
+    let pool = rotate_rows(rows, seed);
+    let mut stack: Vec<SectionRow> = Vec::with_capacity(k);
+    let mut results: Vec<ScheduleOption> = Vec::with_capacity(max_candidates.min(256));
+    let mut seen: HashSet<String> = HashSet::with_capacity(max_candidates);
+    dfs_collect(
+        &pool,
+        k,
+        max_candidates,
+        earliest_start,
+        max_per_subject,
+        starts,
+        min_total_credits,
+        max_total_credits,
+        prereqs,
+        0,
+        &mut stack,
+        &mut results,
+        &mut seen,
+    );
+    results
+}
+
 fn build_combinational_candidates(
     rows: &[SectionRow],
     k: usize,
@@ -183,13 +425,13 @@ fn build_combinational_candidates(
     earliest_start: i32,
     max_per_subject: usize,
     starts: &HashMap<String, i32>,
+    min_total_credits: f64,
+    max_total_credits: f64,
+    prereqs: &HashMap<String, Vec<Vec<String>>>,
 ) -> Vec<ScheduleOption> {
     if rows.is_empty() || k == 0 {
         return Vec::new();
     }
-
-    let mut results: Vec<ScheduleOption> = Vec::with_capacity(max_candidates.min(256));
-    let mut seen: HashSet<String> = HashSet::with_capacity(max_candidates);
 
     let seeds = [
         0usize,
@@ -199,104 +441,39 @@ fn build_combinational_candidates(
         rows.len() / 2,
     ];
 
-    for &seed in &seeds {
-        let pool = rotate_rows(rows, seed);
-        let mut stack: Vec<SectionRow> = Vec::with_capacity(k);
+    let batches: Vec<Vec<ScheduleOption>> = seeds
+        .par_iter()
+        .map(|&seed| {
+            candidates_for_seed(
+                rows,
+                seed,
+                k,
+                max_candidates,
+                earliest_start,
+                max_per_subject,
+                starts,
+                min_total_credits,
+                max_total_credits,
+                prereqs,
+            )
+        })
+        .collect();
 
-        fn dfs(
-            pool: &[SectionRow],
-            k: usize,
-            max_candidates: usize,
-            earliest_start: i32,
-            max_per_subject: usize,
-            starts: &HashMap<String, i32>,
-            start: usize,
-            stack: &mut Vec<SectionRow>,
-            results: &mut Vec<ScheduleOption>,
-            seen: &mut HashSet<String>,
-        ) {
-            if results.len() >= max_candidates {
-                return;
-            }
-            if stack.len() == k {
-                let mut sections = Vec::with_capacity(k);
-                for row in stack.iter() {
-                    let section_id = format!("{}-{}", row.course_code, row.section);
-                    if !section_passes_earliest(&section_id, earliest_start, starts) {
-                        return;
-                    }
-                    sections.push(section_id);
-                }
-                let key = unique_key_from_sections(&sections);
-                if seen.contains(&key) {
-                    return;
-                }
-                seen.insert(key);
-                results.push(ScheduleOption {
-                    id: String::new(),
-                    sections,
-                    expected_utility: 0.0,
-                    stress_score: 0.0,
-                    academic_load_score: 0.0,
-                    lifestyle_penalty_score: 0.0,
-                });
-                return;
-            }
-
-            let mut used_course: HashSet<String> = HashSet::new();
-            let mut subject_counts: HashMap<String, usize> = HashMap::new();
-            for row in stack.iter() {
-                used_course.insert(row.course_code.clone());
-                *subject_counts.entry(row.subject_code.clone()).or_insert(0) += 1;
-            }
-
-            for i in start..pool.len() {
-                let row = &pool[i];
-                if used_course.contains(&row.course_code) {
-                    continue;
-                }
-                if subject_counts.get(&row.subject_code).copied().unwrap_or(0) >= max_per_subject {
-                    continue;
-                }
-                stack.push(row.clone());
-                dfs(
-                    pool,
-                    k,
-                    max_candidates,
-                    earliest_start,
-                    max_per_subject,
-                    starts,
-                    i + 1,
-                    stack,
-                    results,
-                    seen,
-                );
-                stack.pop();
-                if results.len() >= max_candidates {
-                    return;
+    let mut merged: Vec<ScheduleOption> = Vec::with_capacity(max_candidates.min(256));
+    let mut global_seen: HashSet<String> = HashSet::with_capacity(max_candidates);
+    'outer: for batch in batches {
+        for opt in batch {
+            let key = unique_key_from_sections(&opt.sections);
+            if global_seen.insert(key) {
+                merged.push(opt);
+                if merged.len() >= max_candidates {
+                    break 'outer;
                 }
             }
-        }
-
-        dfs(
-            &pool,
-            k,
-            max_candidates,
-            earliest_start,
-            max_per_subject,
-            starts,
-            0,
-            &mut stack,
-            &mut results,
-            &mut seen,
-        );
-
-        if results.len() >= max_candidates {
-            break;
         }
     }
 
-    assign_schedule_ids(results)
+    assign_schedule_ids(merged)
 }
 
 fn filter_rows_by_subjects(
@@ -445,13 +622,13 @@ fn score_schedule(
 }
 
 fn apply_schedule_scores(options: &mut [ScheduleOption], by_section: &HashMap<String, Vec<MeetingBlock>>, weights: &ScoreWeights) {
-    for opt in options.iter_mut() {
+    options.par_iter_mut().for_each(|opt| {
         let (s, u, a, l) = score_schedule(&opt.sections, by_section, weights);
         opt.stress_score = s;
         opt.expected_utility = u;
         opt.academic_load_score = a;
         opt.lifestyle_penalty_score = l;
-    }
+    });
 }
 
 fn dominates(a: &ScheduleOption, b: &ScheduleOption) -> bool {
@@ -556,6 +733,14 @@ pub fn run_optimize(
     };
     let earliest = params.earliest_start_minutes.max(0);
 
+    let min_cr = params.min_total_credits.max(0.0);
+    let max_cr = params.max_total_credits.max(0.0);
+
+    let prereq_map: HashMap<String, Vec<Vec<String>>> = match companion_courses_csv(sections_path) {
+        Some(p) => load_prereq_clauses_map(&p)?,
+        None => HashMap::new(),
+    };
+
     let mut candidates = build_combinational_candidates(
         &rows,
         k,
@@ -563,6 +748,9 @@ pub fn run_optimize(
         earliest,
         max_per_subject,
         &start_times,
+        min_cr,
+        max_cr,
+        &prereq_map,
     );
 
     if candidates.is_empty() {
@@ -584,10 +772,14 @@ pub fn run_optimize(
         params.max_results.clamp(1, 25) as usize
     };
 
+    let conflict_free: Vec<bool> = candidates
+        .par_iter()
+        .map(|opt| detect_conflicts(&meetings, &opt.sections).is_empty())
+        .collect();
+
     let mut filtered: Vec<ScheduleOption> = Vec::new();
-    for opt in candidates.iter() {
-        let conflicts = detect_conflicts(&meetings, &opt.sections);
-        if conflicts.is_empty() {
+    for (opt, ok) in candidates.iter().zip(conflict_free.iter()) {
+        if *ok {
             filtered.push(opt.clone());
             if !params.pareto && filtered.len() == max_results {
                 break;
@@ -632,4 +824,57 @@ pub fn run_optimize(
     }
 
     Ok((filtered, effective, reason))
+}
+
+#[cfg(test)]
+mod credit_bounds_tests {
+    use super::*;
+
+    #[test]
+    fn passes_credit_bounds_respects_min_and_max() {
+        assert!(passes_credit_bounds(6.0, 6.0, 0.0));
+        assert!(!passes_credit_bounds(5.99, 6.0, 0.0));
+        assert!(passes_credit_bounds(6.0, 0.0, 6.0));
+        assert!(!passes_credit_bounds(6.01, 0.0, 6.0));
+        assert!(passes_credit_bounds(5.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn stack_total_credits_sums_rows() {
+        let stack = vec![
+            SectionRow {
+                subject_code: "A".into(),
+                course_code: "A1".into(),
+                section: "01".into(),
+                credits: 3.0,
+            },
+            SectionRow {
+                subject_code: "B".into(),
+                course_code: "B1".into(),
+                section: "01".into(),
+                credits: 1.5,
+            },
+        ];
+        assert!((stack_total_credits(&stack) - 4.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn schedule_satisfies_prereq_groups_and_or() {
+        let mut m: HashMap<String, Vec<Vec<String>>> = HashMap::new();
+        // COMP200 needs COMP112 (singleton OR-group)
+        m.insert("COMP200".into(), vec![vec!["COMP112".into()]]);
+        let ok: HashSet<String> = ["COMP200", "COMP112"].iter().map(|s| s.to_string()).collect();
+        assert!(schedule_satisfies_prereq_groups(&ok, &m));
+        let bad: HashSet<String> = ["COMP200"].iter().map(|s| s.to_string()).collect();
+        assert!(!schedule_satisfies_prereq_groups(&bad, &m));
+        // ECON110 needs any of MATH120 or MATH121
+        m.insert(
+            "ECON110".into(),
+            vec![vec!["MATH120".into(), "MATH121".into()]],
+        );
+        let ok_or: HashSet<String> = ["ECON110", "MATH121"].iter().map(|s| s.to_string()).collect();
+        assert!(schedule_satisfies_prereq_groups(&ok_or, &m));
+        let bad_or: HashSet<String> = ["ECON110", "COMP112"].iter().map(|s| s.to_string()).collect();
+        assert!(!schedule_satisfies_prereq_groups(&bad_or, &m));
+    }
 }

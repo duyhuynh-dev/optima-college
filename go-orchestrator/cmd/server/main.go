@@ -85,6 +85,7 @@ type sectionRow struct {
 	SubjectCode string
 	CourseCode  string
 	Section     string
+	Credits     float64
 }
 
 type scheduleParams struct {
@@ -92,6 +93,8 @@ type scheduleParams struct {
 	MaxResults       int
 	EarliestStart    int
 	MaxPerSubject    int
+	MinTotalCredits  float64
+	MaxTotalCredits  float64
 	SubjectWhitelist map[string]struct{}
 	SubjectBlacklist map[string]struct{}
 	Debug            bool
@@ -143,6 +146,14 @@ func loadSectionsFromCSV(path string, maxRows int) ([]sectionRow, error) {
 		subject := record[indices["subject_code"]]
 		course := record[indices["course_code"]]
 		section := record[indices["section"]]
+		credits := 1.0
+		if ci, ok := indices["credits"]; ok && ci < len(record) {
+			if v := strings.TrimSpace(record[ci]); v != "" {
+				if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+					credits = f
+				}
+			}
+		}
 		key := course + "-" + section
 		if _, ok := seen[key]; ok {
 			continue
@@ -152,6 +163,7 @@ func loadSectionsFromCSV(path string, maxRows int) ([]sectionRow, error) {
 			SubjectCode: subject,
 			CourseCode:  course,
 			Section:     section,
+			Credits:     credits,
 		})
 		if maxRows > 0 && len(rows) >= maxRows {
 			break
@@ -390,11 +402,29 @@ func parseQueryParams(req *http.Request) scheduleParams {
 		}
 	}
 
+	minTotalCredits := 0.0
+	maxTotalCredits := 0.0
+	if raw := q.Get("min_total_credits"); raw != "" {
+		if f, err := strconv.ParseFloat(raw, 64); err == nil && f >= 0 && f <= 40 {
+			minTotalCredits = f
+		}
+	}
+	if raw := q.Get("max_total_credits"); raw != "" {
+		if f, err := strconv.ParseFloat(raw, 64); err == nil && f >= 0 && f <= 40 {
+			maxTotalCredits = f
+		}
+	}
+	if minTotalCredits > 0 && maxTotalCredits > 0 && maxTotalCredits < minTotalCredits {
+		maxTotalCredits = minTotalCredits
+	}
+
 	return scheduleParams{
 		K:                k,
 		MaxResults:       maxResults,
 		EarliestStart:    earliestStart,
 		MaxPerSubject:    maxPerSubject,
+		MinTotalCredits:  minTotalCredits,
+		MaxTotalCredits:  maxTotalCredits,
 		SubjectWhitelist: subjectWhitelist,
 		SubjectBlacklist: subjectBlacklist,
 		Debug:            debug,
@@ -598,7 +628,135 @@ func uniqueKeyFromSections(sections []string) string {
 	return strings.Join(cp, "|")
 }
 
-func buildCombinationalCandidates(rows []sectionRow, k, maxCandidates int, earliestStart int, maxPerSubject int, starts map[string]int) []ScheduleOption {
+func stackTotalCredits(stack []sectionRow) float64 {
+	var t float64
+	for _, r := range stack {
+		t += r.Credits
+	}
+	return t
+}
+
+func passesCreditBounds(total, minC, maxC float64) bool {
+	const eps = 1e-6
+	if minC > eps && total+eps < minC {
+		return false
+	}
+	if maxC > eps && total > maxC+eps {
+		return false
+	}
+	return true
+}
+
+// companionCoursesCSVPath returns courses_<term>.csv beside sections_<term>.csv, or "" if the name pattern does not match.
+func companionCoursesCSVPath(sectionsPath string) string {
+	base := filepath.Base(sectionsPath)
+	if !strings.HasPrefix(base, "sections_") || !strings.HasSuffix(base, ".csv") {
+		return ""
+	}
+	term := strings.TrimSuffix(strings.TrimPrefix(base, "sections_"), ".csv")
+	return filepath.Join(filepath.Dir(sectionsPath), fmt.Sprintf("courses_%s.csv", term))
+}
+
+// loadPrereqGroups reads JSON prerequisite clauses from courses CSV (prereq_groups column). Missing file or column yields an empty map.
+func loadPrereqGroups(path string) map[string][][]string {
+	out := make(map[string][][]string)
+	if path == "" {
+		return out
+	}
+	st, err := os.Stat(path)
+	if err != nil || st.IsDir() {
+		return out
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return out
+	}
+	defer f.Close()
+	reader := csv.NewReader(f)
+	header, err := reader.Read()
+	if err != nil {
+		return out
+	}
+	indices := map[string]int{}
+	for i, name := range header {
+		indices[strings.TrimSpace(name)] = i
+	}
+	ccIdx, ok1 := indices["course_code"]
+	pgIdx, ok2 := indices["prereq_groups"]
+	if !ok1 || !ok2 {
+		return out
+	}
+	for {
+		record, readErr := reader.Read()
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			break
+		}
+		if ccIdx >= len(record) || pgIdx >= len(record) {
+			continue
+		}
+		code := strings.ToUpper(strings.TrimSpace(record[ccIdx]))
+		if code == "" {
+			continue
+		}
+		raw := strings.TrimSpace(record[pgIdx])
+		if raw == "" {
+			raw = "[]"
+		}
+		var groups [][]string
+		if err := json.Unmarshal([]byte(raw), &groups); err != nil {
+			continue
+		}
+		norm := make([][]string, 0, len(groups))
+		for _, g := range groups {
+			ng := make([]string, 0, len(g))
+			for _, c := range g {
+				u := strings.ToUpper(strings.TrimSpace(c))
+				if u != "" {
+					ng = append(ng, u)
+				}
+			}
+			if len(ng) > 0 {
+				norm = append(norm, ng)
+			}
+		}
+		out[code] = norm
+	}
+	return out
+}
+
+func passesPrereqs(stack []sectionRow, prereqGroups map[string][][]string) bool {
+	if len(prereqGroups) == 0 {
+		return true
+	}
+	selected := make(map[string]struct{}, len(stack))
+	for _, r := range stack {
+		selected[strings.ToUpper(strings.TrimSpace(r.CourseCode))] = struct{}{}
+	}
+	for c := range selected {
+		clauses, ok := prereqGroups[c]
+		if !ok {
+			continue
+		}
+		for _, orGroup := range clauses {
+			hit := false
+			for _, alt := range orGroup {
+				if _, ok := selected[alt]; ok {
+					hit = true
+					break
+				}
+			}
+			if !hit {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func buildCombinationalCandidates(rows []sectionRow, k, maxCandidates int, earliestStart int, maxPerSubject int, starts map[string]int, minTotalCredits, maxTotalCredits float64, prereqGroups map[string][][]string) []ScheduleOption {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -623,6 +781,12 @@ func buildCombinationalCandidates(rows []sectionRow, k, maxCandidates int, earli
 						return
 					}
 					sections = append(sections, sectionID)
+				}
+				if !passesCreditBounds(stackTotalCredits(stack), minTotalCredits, maxTotalCredits) {
+					return
+				}
+				if !passesPrereqs(stack, prereqGroups) {
+					return
 				}
 				key := uniqueKeyFromSections(sections)
 				if _, ok := seen[key]; ok {
@@ -832,10 +996,12 @@ func buildOptimizeRequest(absSections, absMeetings string, params scheduleParams
 			WBackToBack: params.Weights.BackToBack,
 			WBusyDay:    params.Weights.BusyDay,
 		},
-		Pareto:          params.Pareto,
-		ParetoMode:      params.ParetoMode,
-		ParetoEpsilon:   params.ParetoEpsilon,
-		MaxCandidates:   2000,
+		Pareto:            params.Pareto,
+		ParetoMode:        params.ParetoMode,
+		ParetoEpsilon:     params.ParetoEpsilon,
+		MaxCandidates:     2000,
+		MinTotalCredits:   params.MinTotalCredits,
+		MaxTotalCredits:   params.MaxTotalCredits,
 	}
 }
 
@@ -920,7 +1086,8 @@ func schedulesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	candidateOptions := buildCombinationalCandidates(rows, params.K, 2000, params.EarliestStart, params.MaxPerSubject, startTimes)
+	prereqMap := loadPrereqGroups(companionCoursesCSVPath(sectionsPath))
+	candidateOptions := buildCombinationalCandidates(rows, params.K, 2000, params.EarliestStart, params.MaxPerSubject, startTimes, params.MinTotalCredits, params.MaxTotalCredits, prereqMap)
 	if len(candidateOptions) == 0 {
 		resp := ScheduleResponse{
 			GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
@@ -1033,6 +1200,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/v1/schedules", schedulesHandler)
+	mux.HandleFunc("/v1/agent/plan", agentPlanHandler)
 
 	addr := ":8080"
 	handler := instrumentHTTP(mux)

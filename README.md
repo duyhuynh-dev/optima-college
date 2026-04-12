@@ -29,6 +29,10 @@ You can tune generation with query params, for example:
 - `curl -s "http://localhost:8080/v1/schedules?k=4&max_results=10&earliest_start=10:00AM"`
 - `curl -s "http://localhost:8080/v1/schedules?k=4&max_results=10&max_per_subject=1&subject_whitelist=COMP,ECON&subject_blacklist=AFAM"`
 
+Hard **credit load** (Phase 2): optional `min_total_credits` and `max_total_credits` bound the sum of per-row `credits` in the sections CSV (ingest writes `1.0` by default until real credit values are parsed). Re-run `make ingest` if your CSV predates the `credits` column.
+
+**Prerequisites** (Phase 2): `courses_<term>.csv` column **`prereq_groups`** — JSON array of OR-clauses, AND across clauses (e.g. `[["MATH120","MATH121"]]` means at least one of those codes if the student takes the course). **`make ingest`** writes `[]`; run **`make ingest-enrich`** (many HTTP requests) to fill credits + prereqs from WesMaps course-detail pages.
+
 `expected_utility` and `stress_score` are computed from `python-ml/output/meetings_1269.csv`: weekly contact time, evening load (starts from 5:00 PM), early-morning load (before 9:00 AM), back-to-back blocks (gap under 12 minutes), and busiest day. Utility is `1 - stress` after blending those signals (caps normalize each term to roughly 0–1).
 
 Tune weights (non-negative; server normalizes to sum to 1): `w_weekly`, `w_evening`, `w_early`, `w_back_to_back`, `w_busy_day`. Example: prioritize avoiding night classes: `&w_evening=0.6&w_weekly=0.2&w_early=0.1&w_back_to_back=0.05&w_busy_day=0.05`.
@@ -36,6 +40,22 @@ Tune weights (non-negative; server normalizes to sum to 1): `w_weekly`, `w_eveni
 Add `debug=1` to include `score_breakdown` on each option and see `score_weights` in the response.
 Add `pareto=1` to return only non-dominated schedules by maximizing `expected_utility` and minimizing `stress_score`.
 Use `pareto_mode=epsilon&pareto_epsilon=0.03` (or rely on strict auto-fallback) to broaden tradeoff choices when strict Pareto returns too few options.
+
+### AI agent plan (natural language → structured intent → schedules)
+
+- **Endpoint:** `POST http://localhost:8080/v1/agent/plan` with JSON body `{"message":"...","locale":"en"}`.
+- **Secrets:** set **`OPENAI_API_KEY`**; optional **`OPENAI_MODEL`** (default `gpt-4o-mini`).
+- **Response:** `structured_panel` (validated `schedule_intent_v1`), optional **`schedules`** (same shape as `/v1/schedules`), and **`schedule_query`** echoing the internal allowlisted call.
+- **Contracts:** versioned schema and policy in [`contracts/agent/README.md`](contracts/agent/README.md) (Go embeds a duplicate at `go-orchestrator/internal/agent/schedule_intent_v1.schema.json` — keep in sync).
+- **Optional:** `ORCHESTRATOR_AGENT_CATALOG_STATS` — single-line aggregate hint only (no row-level catalog in prompts).
+
+Example:
+
+```bash
+curl -s -X POST http://localhost:8080/v1/agent/plan \
+  -H "Content-Type: application/json" \
+  -d '{"message":"I want 4 courses, avoid evening classes, subject areas COMP and ECON","locale":"en"}'
+```
 
 ## Data Ingestion (Phase 1)
 
@@ -81,7 +101,7 @@ Stop Jaeger: `make otel-jaeger-down`. You can point the same env vars at any OTL
 | Area | Done | Next |
 |------|------|------|
 | **Data** | WesMaps → CSV ingest (`make ingest`), sections/meetings for scoring, BQ load path | **`make pipeline`** + DQ (`make dq`); daily job in [`.github/workflows/data-pipeline.yml`](.github/workflows/data-pipeline.yml) |
-| **Rust kernel** | HTTP conflicts, gRPC `CheckConflicts` + `Optimize`, OTLP traces | Optional: more unit tests around `optimize` |
+| **Rust kernel** | HTTP conflicts, gRPC `Optimize` (credits + direct prereqs, Rayon scoring / conflict scan / seeds), OTLP traces | Optional: more unit tests around `optimize` |
 | **Go orchestrator** | `/v1/schedules` (prefers kernel `Optimize` via gRPC; `legacy=1` fallback), OTLP, smoke tests | More integration tests (with kernel / fixtures) |
 | **Contracts** | `kernel.proto` (`CheckConflicts`, `Optimize`, `Health`) | Evolve as new RPCs are added |
 | **Observability** | Jaeger `docker-compose`, shared OTLP/HTTP `:4318` | Production collector / dashboards |

@@ -4,7 +4,7 @@
 
 1. From the repo root, run **`make ci`** (`cargo test` in `rust-kernel/`, `go test` in `go-orchestrator/`).
 2. If you changed **`contracts/proto/**/*.proto`**, regenerate Go stubs: **`make proto-go`**, then commit the generated files under `go-orchestrator/internal/gen/`.
-3. If you changed the WesMaps ingest, run **`make ingest`** (or a shorter local ingest) and sanity-check outputs under `python-ml/output/` (gitignored).
+3. If you changed the WesMaps ingest, run **`make ingest`** (or **`make ingest-enrich`** for detail-backed credits + `prereq_groups`) and sanity-check `python-ml/output/`. **`make dq`** expects **`credits`** on sections and **`prereq_groups`** JSON on courses.
 
 ## Conventions
 

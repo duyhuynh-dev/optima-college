@@ -1,4 +1,4 @@
-.PHONY: run-orchestrator run-kernel run-ml ingest dq pipeline gcs-bronze proto-go otel-jaeger otel-jaeger-down ci bq-load
+.PHONY: run-orchestrator run-kernel run-ml ingest ingest-enrich dq pipeline gcs-bronze proto-go otel-jaeger otel-jaeger-down ci bq-load
 
 # WesMaps term code (NOT the shell's TERM=xterm — use a dedicated name).
 # Example: make ingest WES_TERM=1269 && make bq-load
@@ -22,6 +22,11 @@ run-ml:
 ingest:
 	cd python-ml && python3 -m pip install -q "requests>=2.31.0" "beautifulsoup4>=4.12.0" && \
 	  PYTHONPATH=src python3 -m optima_ingest.cli --term $(WES_TERM) --out-dir output
+
+# Same as ingest + per-course WesMaps detail fetches (credits + prereq_groups JSON; ~1 HTTP call per distinct course_ref).
+ingest-enrich:
+	cd python-ml && python3 -m pip install -q "requests>=2.31.0" "beautifulsoup4>=4.12.0" && \
+	  PYTHONPATH=src python3 -m optima_ingest.cli --term $(WES_TERM) --out-dir output --enrich
 
 # Silver CSV DQ (Checkpoint A). Optional drift: DQ_DRIFT_MAX=0.35 make dq
 dq:

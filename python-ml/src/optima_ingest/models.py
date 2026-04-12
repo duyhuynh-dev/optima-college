@@ -18,6 +18,8 @@ class CourseRecord:
     course_title: str
     course_ref: str
     source_url: str
+    # JSON: list of OR-groups (each inner list = need ≥1 code), AND across groups. E.g. [["MATH120","MATH121"]] or [[],[]]. "[]" if none.
+    prereq_groups: str
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,8 @@ class SectionRecord:
     instructor: str
     meeting_pattern: str
     source_url: str
+    # Semester credit hours for schedule hard constraints (solver); default until catalog parsing fills real values.
+    credits: str
 
 
 @dataclass(frozen=True)

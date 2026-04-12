@@ -19,6 +19,12 @@
 
 3. **Create tables:** paste/run `schema.sql` in the [BigQuery console](https://console.cloud.google.com/bigquery) (SQL workspace), or split into one statement per table if the UI requires it.
 
+   **Existing `sections` tables:** if you created them before the `credits` column existed, add it before loading newer CSVs, for example:  
+   `ALTER TABLE sections ADD COLUMN IF NOT EXISTS credits FLOAT64;`
+
+   **Existing `courses` tables:** add `prereq_groups` if missing:  
+   `ALTER TABLE courses ADD COLUMN IF NOT EXISTS prereq_groups STRING;`
+
 4. **Load from local CSVs** (after `make ingest`):
 
    ```bash

@@ -13,10 +13,14 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+# WesMaps-style catalog codes (subject + number + optional letter).
+_PREREQ_CODE_RE = re.compile(r"^[A-Z]{2,5}\d{3}[A-Z]?$")
 
 
 @dataclass(frozen=True)
@@ -47,7 +51,11 @@ def _require_cols(fieldnames: list[str], required: set[str], name: str) -> None:
 
 
 def _check_courses(fieldnames: list[str], rows: list[dict[str, str]]) -> None:
-    _require_cols(fieldnames, {"term", "subject_code", "course_code", "course_title"}, "courses")
+    _require_cols(
+        fieldnames,
+        {"term", "subject_code", "course_code", "course_title", "prereq_groups"},
+        "courses",
+    )
     if not rows:
         raise SystemExit("courses CSV has no data rows")
     seen: set[tuple[str, str, str]] = set()
@@ -57,6 +65,24 @@ def _check_courses(fieldnames: list[str], rows: list[dict[str, str]]) -> None:
         ).strip()
         if not t or not s or not c:
             raise SystemExit(f"courses row {i}: empty term/subject_code/course_code")
+        raw_pg = (row.get("prereq_groups") or "").strip() or "[]"
+        try:
+            pg = json.loads(raw_pg)
+        except json.JSONDecodeError as e:
+            raise SystemExit(f"courses row {i}: invalid prereq_groups JSON: {e}") from e
+        if not isinstance(pg, list):
+            raise SystemExit(f"courses row {i}: prereq_groups must be a JSON array")
+        for j, clause in enumerate(pg):
+            if not isinstance(clause, list):
+                raise SystemExit(f"courses row {i}: prereq_groups[{j}] must be an array")
+            for code in clause:
+                if not isinstance(code, str):
+                    raise SystemExit(f"courses row {i}: prereq_groups codes must be strings")
+                tok = code.strip().upper()
+                if not tok:
+                    continue
+                if not _PREREQ_CODE_RE.match(tok):
+                    raise SystemExit(f"courses row {i}: invalid prerequisite code {tok!r}")
         key = (t, s, c)
         if key in seen:
             raise SystemExit(f"courses row {i}: duplicate (term, subject_code, course_code)={key}")
@@ -66,7 +92,7 @@ def _check_courses(fieldnames: list[str], rows: list[dict[str, str]]) -> None:
 def _check_sections(fieldnames: list[str], rows: list[dict[str, str]]) -> None:
     if not rows:
         return
-    _require_cols(fieldnames, {"term", "subject_code", "course_code", "section"}, "sections")
+    _require_cols(fieldnames, {"term", "subject_code", "course_code", "section", "credits"}, "sections")
     seen: set[tuple[str, str, str, str]] = set()
     for i, row in enumerate(rows, start=2):
         t = row.get("term", "").strip()
@@ -75,6 +101,15 @@ def _check_sections(fieldnames: list[str], rows: list[dict[str, str]]) -> None:
         sec = row.get("section", "").strip()
         if not t or not s or not cc or not sec:
             raise SystemExit(f"sections row {i}: empty term/subject_code/course_code/section")
+        cr = row.get("credits", "").strip()
+        if not cr:
+            raise SystemExit(f"sections row {i}: empty credits")
+        try:
+            cr_f = float(cr)
+        except ValueError as e:
+            raise SystemExit(f"sections row {i}: invalid credits {cr!r}") from e
+        if cr_f <= 0:
+            raise SystemExit(f"sections row {i}: credits must be positive, got {cr_f}")
         key = (t, s, cc, sec)
         if key in seen:
             raise SystemExit(f"sections row {i}: duplicate section key={key}")

@@ -64,6 +64,9 @@ message OptimizeRequest {
   string pareto_mode = 11;
   double pareto_epsilon = 12;
   int32 max_candidates = 13;
+  // Hard constraint: sum of per-section credits (from sections CSV "credits" column, default 1.0). Zero = unset.
+  double min_total_credits = 14;
+  double max_total_credits = 15;
 }
 
 message ScheduleOption {

@@ -93,6 +93,7 @@ _SCHEMA_COURSES: list[bigquery.SchemaField] = [
     bigquery.SchemaField("course_number", "STRING"),
     bigquery.SchemaField("course_title", "STRING"),
     bigquery.SchemaField("course_ref", "STRING"),
+    bigquery.SchemaField("prereq_groups", "STRING"),
     bigquery.SchemaField("source_url", "STRING"),
     bigquery.SchemaField("ingested_at", "TIMESTAMP"),
 ]
@@ -105,6 +106,7 @@ _SCHEMA_SECTIONS: list[bigquery.SchemaField] = [
     bigquery.SchemaField("section", "STRING"),
     bigquery.SchemaField("instructor", "STRING"),
     bigquery.SchemaField("meeting_pattern", "STRING"),
+    bigquery.SchemaField("credits", "FLOAT64"),
     bigquery.SchemaField("source_url", "STRING"),
     bigquery.SchemaField("ingested_at", "TIMESTAMP"),
 ]
@@ -206,11 +208,11 @@ FROM {staging}
 # Explicit column lists — must match infra/bigquery/schema.sql and CSV headers.
 _COURSES_COLS = (
     "term, term_label, subject_code, course_code, course_number, course_title, "
-    "course_ref, source_url, ingested_at"
+    "course_ref, prereq_groups, source_url, ingested_at"
 )
 _SECTIONS_COLS = (
     "term, term_label, subject_code, course_code, course_ref, section, instructor, "
-    "meeting_pattern, source_url, ingested_at"
+    "meeting_pattern, credits, source_url, ingested_at"
 )
 _MEETINGS_COLS = (
     "term, term_label, subject_code, course_code, course_ref, section, day_code, "

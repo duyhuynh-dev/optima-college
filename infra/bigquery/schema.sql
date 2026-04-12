@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS courses (
   course_number STRING,
   course_title STRING,
   course_ref STRING,
+  prereq_groups STRING OPTIONS(description = "JSON: AND of OR-groups of prerequisite course codes (see ingest enrich)"),
   source_url STRING,
   ingested_at TIMESTAMP NOT NULL
 )
@@ -26,6 +27,7 @@ CREATE TABLE IF NOT EXISTS sections (
   section STRING NOT NULL,
   instructor STRING,
   meeting_pattern STRING,
+  credits FLOAT64 OPTIONS(description = "Credit hours per section row; solver hard constraints use this column"),
   source_url STRING,
   ingested_at TIMESTAMP NOT NULL
 )

@@ -37,9 +37,11 @@ def test_parse_subject_page_extracts_section_fields() -> None:
     assert course.course_number == "112"
     assert course.course_ref == "003328"
     assert course.course_title == "Introduction to Programming"
+    assert course.prereq_groups == "[]"
 
     assert section.section == "01"
     assert section.instructor == "Thayer,Kelly"
+    assert section.credits == "1.0"
     assert "08:50AM-10:10AM" in section.meeting_pattern
     assert {m.day_code for m in meetings} == {"T", "R"}
     assert all(m.start_time == "08:50AM" for m in meetings)

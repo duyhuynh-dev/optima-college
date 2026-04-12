@@ -135,6 +135,8 @@ impl Kernel for KernelService {
             },
             pareto_epsilon: req.pareto_epsilon,
             max_candidates: req.max_candidates,
+            min_total_credits: req.min_total_credits,
+            max_total_credits: req.max_total_credits,
         };
 
         let (options, effective, reason) =

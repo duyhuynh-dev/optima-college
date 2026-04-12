@@ -421,8 +421,11 @@ type OptimizeRequest struct {
 	ParetoMode           string                 `protobuf:"bytes,11,opt,name=pareto_mode,json=paretoMode,proto3" json:"pareto_mode,omitempty"`
 	ParetoEpsilon        float64                `protobuf:"fixed64,12,opt,name=pareto_epsilon,json=paretoEpsilon,proto3" json:"pareto_epsilon,omitempty"`
 	MaxCandidates        int32                  `protobuf:"varint,13,opt,name=max_candidates,json=maxCandidates,proto3" json:"max_candidates,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// Hard constraint: sum of per-section credits (from sections CSV "credits" column, default 1.0). Zero = unset.
+	MinTotalCredits float64 `protobuf:"fixed64,14,opt,name=min_total_credits,json=minTotalCredits,proto3" json:"min_total_credits,omitempty"`
+	MaxTotalCredits float64 `protobuf:"fixed64,15,opt,name=max_total_credits,json=maxTotalCredits,proto3" json:"max_total_credits,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *OptimizeRequest) Reset() {
@@ -542,6 +545,20 @@ func (x *OptimizeRequest) GetParetoEpsilon() float64 {
 func (x *OptimizeRequest) GetMaxCandidates() int32 {
 	if x != nil {
 		return x.MaxCandidates
+	}
+	return 0
+}
+
+func (x *OptimizeRequest) GetMinTotalCredits() float64 {
+	if x != nil {
+		return x.MinTotalCredits
+	}
+	return 0
+}
+
+func (x *OptimizeRequest) GetMaxTotalCredits() float64 {
+	if x != nil {
+		return x.MaxTotalCredits
 	}
 	return 0
 }
@@ -732,7 +749,7 @@ const file_optima_v1_kernel_proto_rawDesc = "" +
 	"\aw_early\x18\x03 \x01(\x01R\x06wEarly\x12#\n" +
 	"\x0ew_back_to_back\x18\x04 \x01(\x01R\vwBackToBack\x12\x1c\n" +
 	"\n" +
-	"w_busy_day\x18\x05 \x01(\x01R\bwBusyDay\"\x8a\x04\n" +
+	"w_busy_day\x18\x05 \x01(\x01R\bwBusyDay\"\xe2\x04\n" +
 	"\x0fOptimizeRequest\x12*\n" +
 	"\x11sections_csv_path\x18\x01 \x01(\tR\x0fsectionsCsvPath\x12*\n" +
 	"\x11meetings_csv_path\x18\x02 \x01(\tR\x0fmeetingsCsvPath\x12\f\n" +
@@ -749,7 +766,9 @@ const file_optima_v1_kernel_proto_rawDesc = "" +
 	"\vpareto_mode\x18\v \x01(\tR\n" +
 	"paretoMode\x12%\n" +
 	"\x0epareto_epsilon\x18\f \x01(\x01R\rparetoEpsilon\x12%\n" +
-	"\x0emax_candidates\x18\r \x01(\x05R\rmaxCandidates\"\xf2\x01\n" +
+	"\x0emax_candidates\x18\r \x01(\x05R\rmaxCandidates\x12*\n" +
+	"\x11min_total_credits\x18\x0e \x01(\x01R\x0fminTotalCredits\x12*\n" +
+	"\x11max_total_credits\x18\x0f \x01(\x01R\x0fmaxTotalCredits\"\xf2\x01\n" +
 	"\x0eScheduleOption\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bsections\x18\x02 \x03(\tR\bsections\x12)\n" +

@@ -6,7 +6,7 @@
 
 **Execution discipline:** Follow the phased plan; **bugs and breakages** are fixed and then work returns to the current phase/checkpoint—no ad hoc rescoping without updating this document under the policy above.
 
-This document is the **structured program plan**. Last reviewed: 2026-04-07.
+This document is the **structured program plan**. Last reviewed: 2026-04-11.
 
 **Legend:** ✅ Done · 🟡 Partial / in flight · ⬜ Not started
 
@@ -18,13 +18,13 @@ This document is the **structured program plan**. Last reviewed: 2026-04-07.
 
 | Your phase | Match today |
 |------------|-------------|
-| **0** | 🟡 Repo layout (`go-orchestrator`, `rust-kernel`, `python-ml`, `contracts`), `Makefile`, CI, protobuf, local Jaeger + OTLP. Missing: issue tracker choice, PR templates, Terraform, KPI dashboard skeleton. |
-| **1** | 🟡 **1.1** Ingest → CSV + optional **local bronze** HTML under `python-ml/output/bronze/`; **silver** in **BigQuery** via [`infra/bigquery/`](../infra/bigquery/) + `make bq-load` (manual path). **GCS bronze** + **scheduled** pipeline not done. **1.2** Practical IDs in CSV + meetings normalized for solving; not full entity DDL everywhere. **1.3** DQ/drift alerts not built. |
-| **2** | 🟡 Conflicts + scoring + Pareto-style tradeoffs exist; search is **combinatorial + filters**, not a full **Rayon/bitset** constraint engine with credits as hard constraints. |
+| **0** | 🟡 Repo layout, `Makefile`, CI, protobuf, Jaeger + OTLP. PR template + branching in [`CONTRIBUTING.md`](../CONTRIBUTING.md). Missing: issue tracker choice, Terraform, KPI dashboard skeleton. |
+| **1** | 🟡 **Checkpoint A closed (ops).** Ingest → CSV + bronze; **GCS** `make gcs-bronze`; **BQ** + scheduled [`data-pipeline.yml`](../.github/workflows/data-pipeline.yml) + `dq_check`. Full entity DDL / alerting still future. |
+| **2** | 🟡 Combinatorial search + **credit totals** + **`prereq_groups`** JSON (AND-of-OR; **`make ingest-enrich`** fills from WesMaps) + **Rayon** in `optimize`; **Pareto**. No **bitset** engine or **transitive** prereq closure yet. |
 | **3** | 🟡 gRPC `CheckConflicts` + `Optimize`, Go gateway, degraded **legacy** path. Missing: richer proto (weights/explanations in one shot was partially done), circuit breaker, Redis. |
 | **4–8** | ⬜ Not started (NL intent, workload ML, frontend, pilot). |
 
-**Verdict:** The architecture you sketched **matches the direction** of what we built (data → Rust kernel → Go API → observability). **Depth** vs the doc: we are **lighter on cloud bronze, formal DQ, and a full constraint/solver engine** than Phases 1–2 describe—we prioritized **vertical slice** (ingest → optimize → API) first.
+**Verdict:** Data → Rust kernel → Go API + observability matches the plan. **Phase 1 checkpoint A** met for pipeline + minimal DQ. **Phase 2** is **staged**: credit bounds, **direct** prerequisite edges, Rayon parallelism; **transitive prereqs**, **bitset pruning**, and **formal perf baselines** still open.
 
 ---
 
@@ -35,7 +35,7 @@ This document is the **structured program plan**. Last reviewed: 2026-04-07.
 | What we do | Progress | Notes |
 |------------|----------|--------|
 | Mono-repo structure (`go-orchestrator`, `rust-kernel`, data/ML, contracts, infra) | ✅ | `python-ml/` = data pipeline; no separate `data-pipeline/` repo. |
-| Engineering standards: branching, PR template, testing gates, release tags | 🟡 | CI: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) (`cargo test`, `go test`). PR template / branching TBD. |
+| Engineering standards: branching, PR template, testing gates, release tags | 🟡 | CI: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml). [`.github/pull_request_template.md`](../.github/pull_request_template.md) + branching in [`CONTRIBUTING.md`](../CONTRIBUTING.md). |
 | KPI dashboard skeleton (latency, validity, freshness, uptime) | ⬜ | |
 | Data contracts + protobuf schemas early | 🟡 | [`contracts/proto/optima/v1/kernel.proto`](../contracts/proto/optima/v1/kernel.proto) — extend as API grows. |
 
@@ -52,7 +52,7 @@ This document is the **structured program plan**. Last reviewed: 2026-04-07.
 | What we do | Progress | Notes |
 |------------|----------|--------|
 | Crawl by term / subject | 🟡 | `make ingest` / `optima_ingest` → CSV under `python-ml/output/`. |
-| Bronze: raw HTML snapshots | 🟡 | Local bronze HTML optional (`--no-bronze` to skip). **GCS (or cloud) bronze** ⬜. |
+| Bronze: raw HTML snapshots | 🟡 | Local bronze HTML optional (`--no-bronze` to skip). **GCS bronze** via `make gcs-bronze` (bucket env); optional in ops. |
 | Silver: structured tables | 🟡 | CSV + solver-ready paths; **BigQuery** tables + loader (see `infra/bigquery/`). |
 
 ### 1.2 Canonical schema + IDs
@@ -71,10 +71,10 @@ This document is the **structured program plan**. Last reviewed: 2026-04-07.
 
 | What we do | Progress | Notes |
 |------------|----------|--------|
-| Nulls, duplicates, invalid times, row-drop checks | ⬜ | |
-| Drift alerts (e.g. section count drops) | ⬜ | |
+| Nulls, duplicates, invalid times, row-drop checks | 🟡 | `python3 -m optima_ingest.dq_check` (CI + scheduled workflow). |
+| Drift alerts (e.g. section count drops) | 🟡 | Baseline file in DQ module; external alerting not wired. |
 
-**Checkpoints (from your plan):** **Checkpoint A (end Week 2):** data pipeline on a **defined schedule** (e.g. daily) **+** **validated** silver schema **+** **minimal** DQ (nulls / row sanity / drift hooks as agreed) → **not yet** (manual ingest + BQ load today; scheduler + DQ outstanding).
+**Checkpoints (from your plan):** **Checkpoint A (end Week 2):** data pipeline on a **defined schedule** **+** **validated** silver schema **+** **minimal** DQ → **✅ closed** ([`.github/workflows/data-pipeline.yml`](../.github/workflows/data-pipeline.yml), `dq_check`, optional `bq_load` when GCP secrets are set).
 
 ---
 
@@ -85,12 +85,12 @@ This document is the **structured program plan**. Last reviewed: 2026-04-07.
 | What we do | Progress | Notes |
 |------------|----------|--------|
 | Hard constraints: no time conflicts | ✅ | Kernel conflict detection + Optimize filters conflict-free sets. |
-| Credit min/max, no classes before X, subjects | 🟡 | “Before X” via query param; credits/prereqs not full solver constraints. |
-| Pruning before enumeration | 🟡 | DFS + caps + seeds; not bitset/Rayon engine. |
-| Parallel search + performance baseline | ⬜ | |
+| Credit min/max, no classes before X, subjects | 🟡 | **Total credit min/max** + **`prereq_groups`** JSON (AND of OR-clauses) on courses CSV; optional **`make ingest-enrich`** fills from WesMaps detail pages. **Transitive** closure not computed. “Before X” via query param. |
+| Pruning before enumeration | 🟡 | DFS + caps + seeds; not bitset indexing yet. |
+| Parallel search + performance baseline | 🟡 | **Rayon:** parallel seed DFS merge, parallel scoring, parallel conflict checks. Formal benches / CI perf gates still TBD. |
 | Multi-objective + Pareto | 🟡 | Scoring + Pareto / epsilon in orchestrator + `Optimize`. |
 
-**Checkpoint B (end Week 4):** solver returns valid sets with hard constraints → **partially** (conflicts yes; full credit/prereq hard constraints not yet).
+**Checkpoint B (end Week 4):** solver returns valid sets with hard constraints → **partially** (conflicts + **total credits** + **direct prereqs** yes; **transitive** prereqs / bitset engine still open).
 
 ---
 
@@ -176,8 +176,8 @@ This document is the **structured program plan**. Last reviewed: 2026-04-07.
 | Tech | Role in this repo today |
 |------|-------------------------|
 | **Go** | Orchestrator, HTTP API, gRPC client, OTel HTTP. |
-| **Rust** | Kernel: conflicts, scoring pipeline in `Optimize`, gRPC server. |
-| **BigQuery** | **Silver** path wired (DDL + `bq_load` from CSV); **scheduled** loads + **DQ** still roadmap Phase 1. |
+| **Rust** | Kernel: conflicts, `Optimize` (credits + `prereq_groups` JSON from courses CSV, Rayon, Pareto), gRPC server. |
+| **BigQuery** | **Silver** path wired (DDL + `bq_load`); **scheduled** GitHub workflow runs ingest + DQ; BQ load when secrets are configured. |
 | **OpenTelemetry** | OTLP/HTTP, Jaeger locally. |
 | **DSPy / LangGraph** | Future. |
 
@@ -196,9 +196,9 @@ This document is the **structured program plan**. Last reviewed: 2026-04-07.
 
 ## Suggested next actions (pick order)
 
-1. **Close Checkpoint A (Phase 1):** **schedule** ingest + warehouse load; add **minimal DQ** (SQL or scripts); optional **GCS bronze** for replay/versioning.
-2. **Tighten Phase 0:** PR template + `CONTRIBUTING.md` branching; optional KPI stub (even Grafana folder).
-3. **Deepen Phase 2:** explicit hard constraints (credits, prereqs) in kernel vs heuristics only.
+1. **Phase 2 (in progress):** **transitive** prerequisite closure (or richer catalog) + **bitset / interval** pruning; **performance baselines** (criterion bench or CI threshold).
+2. **Tighten Phase 0:** optional KPI stub (Grafana folder) when you want visibility beyond Jaeger.
+3. **Phase 3:** circuit breaker, Redis/cache, richer proto (explanations in one response).
 4. **Phase 6:** Prometheus + SLOs when you have a persistent deployment.
 
 ---

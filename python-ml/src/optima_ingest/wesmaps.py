@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from .catalog_detail import enrich_from_details
 from .models import CourseRecord, MeetingRecord, SectionRecord, SubjectLink
 
 BASE_URL = "https://owaprod-pub.wesleyan.edu/reg/!wesmaps_page.html"
@@ -146,6 +147,7 @@ def parse_row(
         course_title=course_title,
         course_ref=course_ref,
         source_url=source_url,
+        prereq_groups="[]",
     )
     section_record = SectionRecord(
         term=term,
@@ -157,6 +159,7 @@ def parse_row(
         instructor=instructor,
         meeting_pattern=meeting_pattern,
         source_url=source_url,
+        credits="1.0",
     )
     meetings = parse_meetings(
         term=term,
@@ -246,7 +249,14 @@ def write_csv(path: Path, rows: list[dict[str, str]]) -> None:
         writer.writerows(rows)
 
 
-def run_ingestion(term: str, out_dir: Path, *, save_bronze: bool = True) -> None:
+def run_ingestion(
+    term: str,
+    out_dir: Path,
+    *,
+    save_bronze: bool = True,
+    enrich: bool = False,
+    enrich_workers: int = 8,
+) -> None:
     bronze_root = out_dir / "bronze" / term
     index_url = f"{BASE_URL}?stuid=&facid=NONE&term={term}"
     index_html = fetch_html(index_url)
@@ -273,6 +283,11 @@ def run_ingestion(term: str, out_dir: Path, *, save_bronze: bool = True) -> None
         all_courses.extend(courses)
         all_sections.extend(sections)
         all_meetings.extend(meetings)
+
+    if enrich:
+        all_courses, all_sections = enrich_from_details(
+            term, all_courses, all_sections, max_workers=enrich_workers
+        )
 
     course_rows = [asdict(course) for course in all_courses]
     section_rows = [asdict(section) for section in all_sections]
