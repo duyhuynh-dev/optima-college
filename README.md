@@ -59,6 +59,8 @@ curl -s -X POST http://localhost:8080/v1/agent/plan \
 
 ## Data Ingestion (Phase 1)
 
+**Python venv (recommended):** run **`make venv`** once to create `python-ml/.venv` and install the package with dev tools (`pytest`, `ruff`). The workspace [`.vscode/settings.json`](.vscode/settings.json) points Cursor/VS Code at that interpreter. **`make ingest`**, **`make dq`**, **`make bq-load`**, and related targets use `.venv/bin/python` automatically when the venv exists; otherwise they fall back to `python3`.
+
 Run initial public WesMaps ingest:
 
 - `make ingest`
