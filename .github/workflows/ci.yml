@@ -25,6 +25,9 @@ jobs:
       - name: cargo test
         run: cargo test --verbose
 
+      - name: cargo bench (compile only)
+        run: cargo bench --no-run --verbose
+
   go-orchestrator:
     name: Go orchestrator
     runs-on: ubuntu-latest

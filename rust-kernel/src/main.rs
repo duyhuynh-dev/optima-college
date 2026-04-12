@@ -1,14 +1,10 @@
-mod conflicts;
-mod grpc;
-mod optimize;
-mod telemetry;
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use conflicts::{detect_conflicts, load_meetings_from_csv};
-use grpc::optima::v1::kernel_server::KernelServer;
-use grpc::KernelService;
+use rust_kernel::conflicts::{detect_conflicts, load_meetings_from_csv};
+use rust_kernel::grpc::optima::v1::kernel_server::KernelServer;
+use rust_kernel::grpc::KernelService;
+use rust_kernel::telemetry;
 use serde::Serialize;
 use tiny_http::{Header, Response, Server};
 use tonic::transport::Server as GrpcServer;
@@ -26,7 +22,7 @@ struct ConflictResponse {
     selected_sections: Vec<String>,
     has_conflict: bool,
     conflict_count: usize,
-    conflicts: Vec<conflicts::ConflictPair>,
+    conflicts: Vec<rust_kernel::conflicts::ConflictPair>,
 }
 
 fn parse_query(url: &str) -> HashMap<String, String> {
