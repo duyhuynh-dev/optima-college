@@ -44,6 +44,50 @@ func chdirGoOrchestrator(t *testing.T) (restore func()) {
 	}
 }
 
+func TestPassesPrereqs_TransitiveChain(t *testing.T) {
+	t.Parallel()
+	pg := map[string][][]string{
+		"COMP300": {{"COMP200"}},
+		"COMP200": {{"COMP112"}},
+	}
+	full := []sectionRow{{CourseCode: "COMP300"}, {CourseCode: "COMP200"}, {CourseCode: "COMP112"}}
+	if !passesPrereqs(full, pg) {
+		t.Fatal("expected full chain ok")
+	}
+	skip := []sectionRow{{CourseCode: "COMP300"}, {CourseCode: "COMP112"}}
+	if passesPrereqs(skip, pg) {
+		t.Fatal("expected missing middle course to fail")
+	}
+}
+
+func TestPassesPrereqs_OrAlternativeNeedsOwnPrereqs(t *testing.T) {
+	t.Parallel()
+	pg := map[string][][]string{
+		"ECON110": {{"MATH120", "MATH121"}},
+		"MATH121": {{"MATH120"}},
+	}
+	bad := []sectionRow{{CourseCode: "ECON110"}, {CourseCode: "MATH121"}}
+	if passesPrereqs(bad, pg) {
+		t.Fatal("MATH121 without MATH120 in schedule should fail")
+	}
+	ok := []sectionRow{{CourseCode: "ECON110"}, {CourseCode: "MATH120"}, {CourseCode: "MATH121"}}
+	if !passesPrereqs(ok, pg) {
+		t.Fatal("expected ECON110 + MATH120 + MATH121 ok")
+	}
+}
+
+func TestPassesPrereqs_Cycle(t *testing.T) {
+	t.Parallel()
+	pg := map[string][][]string{
+		"A": {{"B"}},
+		"B": {{"A"}},
+	}
+	stack := []sectionRow{{CourseCode: "A"}, {CourseCode: "B"}}
+	if passesPrereqs(stack, pg) {
+		t.Fatal("prereq cycle should fail")
+	}
+}
+
 func TestSchedulesHandler_Smoke(t *testing.T) {
 	restore := chdirGoOrchestrator(t)
 	defer restore()

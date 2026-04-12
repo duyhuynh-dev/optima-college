@@ -735,24 +735,53 @@ func passesPrereqs(stack []sectionRow, prereqGroups map[string][][]string) bool 
 	for _, r := range stack {
 		selected[strings.ToUpper(strings.TrimSpace(r.CourseCode))] = struct{}{}
 	}
+	memo := make(map[string]bool)
 	for c := range selected {
-		clauses, ok := prereqGroups[c]
-		if !ok {
-			continue
-		}
-		for _, orGroup := range clauses {
-			hit := false
-			for _, alt := range orGroup {
-				if _, ok := selected[alt]; ok {
-					hit = true
-					break
-				}
-			}
-			if !hit {
-				return false
-			}
+		if !coursePrereqsTransitiveSatisfied(c, selected, prereqGroups, memo) {
+			return false
 		}
 	}
+	return true
+}
+
+// coursePrereqsTransitiveSatisfied is true iff every AND-clause (OR-group) for course is satisfied
+// by some alternative in the schedule that is itself recursively satisfied (transitive prereqs).
+func coursePrereqsTransitiveSatisfied(course string, selected map[string]struct{}, prereqGroups map[string][][]string, memo map[string]bool) bool {
+	return coursePrereqsTransitiveVisit(course, selected, prereqGroups, memo, make(map[string]struct{}))
+}
+
+func coursePrereqsTransitiveVisit(course string, selected map[string]struct{}, prereqGroups map[string][][]string, memo map[string]bool, visiting map[string]struct{}) bool {
+	if v, ok := memo[course]; ok {
+		return v
+	}
+	if _, cycle := visiting[course]; cycle {
+		return false
+	}
+	clauses, has := prereqGroups[course]
+	if !has || len(clauses) == 0 {
+		memo[course] = true
+		return true
+	}
+	visiting[course] = struct{}{}
+	for _, orGroup := range clauses {
+		if len(orGroup) == 0 {
+			continue
+		}
+		groupOK := false
+		for _, alt := range orGroup {
+			if _, in := selected[alt]; in && coursePrereqsTransitiveVisit(alt, selected, prereqGroups, memo, visiting) {
+				groupOK = true
+				break
+			}
+		}
+		if !groupOK {
+			delete(visiting, course)
+			memo[course] = false
+			return false
+		}
+	}
+	delete(visiting, course)
+	memo[course] = true
 	return true
 }
 

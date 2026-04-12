@@ -159,30 +159,72 @@ fn companion_courses_csv(sections_path: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Each AND-clause (OR-group) must be satisfied by some alternative `p` that appears in the
+/// schedule and whose own prerequisite groups are recursively satisfied (transitive closure).
 fn schedule_satisfies_prereq_groups(
     selected_courses: &HashSet<String>,
     by_course: &HashMap<String, Vec<Vec<String>>>,
 ) -> bool {
+    let mut memo: HashMap<String, bool> = HashMap::new();
+    let mut visiting: HashSet<String> = HashSet::new();
     for course in selected_courses.iter() {
-        let Some(clauses) = by_course.get(course) else {
-            continue;
-        };
-        for or_group in clauses {
-            if or_group.is_empty() {
-                continue;
-            }
-            let mut any = false;
-            for code in or_group {
-                if selected_courses.contains(code) {
-                    any = true;
-                    break;
-                }
-            }
-            if !any {
-                return false;
-            }
+        if !course_prereqs_transitive_satisfied(
+            course,
+            selected_courses,
+            by_course,
+            &mut memo,
+            &mut visiting,
+        ) {
+            return false;
         }
     }
+    true
+}
+
+fn course_prereqs_transitive_satisfied(
+    course: &str,
+    selected: &HashSet<String>,
+    by_course: &HashMap<String, Vec<Vec<String>>>,
+    memo: &mut HashMap<String, bool>,
+    visiting: &mut HashSet<String>,
+) -> bool {
+    if let Some(&v) = memo.get(course) {
+        return v;
+    }
+    if visiting.contains(course) {
+        return false;
+    }
+    let Some(clauses) = by_course.get(course) else {
+        memo.insert(course.to_string(), true);
+        return true;
+    };
+    if clauses.is_empty() {
+        memo.insert(course.to_string(), true);
+        return true;
+    }
+
+    visiting.insert(course.to_string());
+    for or_group in clauses {
+        if or_group.is_empty() {
+            continue;
+        }
+        let mut group_ok = false;
+        for alt in or_group {
+            if selected.contains(alt)
+                && course_prereqs_transitive_satisfied(alt, selected, by_course, memo, visiting)
+            {
+                group_ok = true;
+                break;
+            }
+        }
+        if !group_ok {
+            visiting.remove(course);
+            memo.insert(course.to_string(), false);
+            return false;
+        }
+    }
+    visiting.remove(course);
+    memo.insert(course.to_string(), true);
     true
 }
 
@@ -876,5 +918,48 @@ mod credit_bounds_tests {
         assert!(schedule_satisfies_prereq_groups(&ok_or, &m));
         let bad_or: HashSet<String> = ["ECON110", "COMP112"].iter().map(|s| s.to_string()).collect();
         assert!(!schedule_satisfies_prereq_groups(&bad_or, &m));
+    }
+
+    #[test]
+    fn transitive_prereq_chain_requires_all_steps_in_schedule() {
+        let mut m: HashMap<String, Vec<Vec<String>>> = HashMap::new();
+        m.insert("COMP300".into(), vec![vec!["COMP200".into()]]);
+        m.insert("COMP200".into(), vec![vec!["COMP112".into()]]);
+        let full: HashSet<String> = ["COMP300", "COMP200", "COMP112"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(schedule_satisfies_prereq_groups(&full, &m));
+        let skip_middle: HashSet<String> = ["COMP300", "COMP112"].iter().map(|s| s.to_string()).collect();
+        assert!(!schedule_satisfies_prereq_groups(&skip_middle, &m));
+        let skip_base: HashSet<String> = ["COMP300", "COMP200"].iter().map(|s| s.to_string()).collect();
+        assert!(!schedule_satisfies_prereq_groups(&skip_base, &m));
+    }
+
+    #[test]
+    fn or_alternative_must_satisfy_its_own_prereqs() {
+        let mut m: HashMap<String, Vec<Vec<String>>> = HashMap::new();
+        m.insert(
+            "ECON110".into(),
+            vec![vec!["MATH120".into(), "MATH121".into()]],
+        );
+        m.insert("MATH121".into(), vec![vec!["MATH120".into()]]);
+        // MATH121 alone is not enough; need MATH120 for MATH121's prereq
+        let bad: HashSet<String> = ["ECON110", "MATH121"].iter().map(|s| s.to_string()).collect();
+        assert!(!schedule_satisfies_prereq_groups(&bad, &m));
+        let ok: HashSet<String> = ["ECON110", "MATH120", "MATH121"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(schedule_satisfies_prereq_groups(&ok, &m));
+    }
+
+    #[test]
+    fn prereq_cycle_in_schedule_fails() {
+        let mut m: HashMap<String, Vec<Vec<String>>> = HashMap::new();
+        m.insert("A".into(), vec![vec!["B".into()]]);
+        m.insert("B".into(), vec![vec!["A".into()]]);
+        let sel: HashSet<String> = ["A", "B"].iter().map(|s| s.to_string()).collect();
+        assert!(!schedule_satisfies_prereq_groups(&sel, &m));
     }
 }

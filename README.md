@@ -31,7 +31,7 @@ You can tune generation with query params, for example:
 
 Hard **credit load** (Phase 2): optional `min_total_credits` and `max_total_credits` bound the sum of per-row `credits` in the sections CSV (ingest writes `1.0` by default until real credit values are parsed). Re-run `make ingest` if your CSV predates the `credits` column.
 
-**Prerequisites** (Phase 2): `courses_<term>.csv` column **`prereq_groups`** — JSON array of OR-clauses, AND across clauses (e.g. `[["MATH120","MATH121"]]` means at least one of those codes if the student takes the course). **`make ingest`** writes `[]`; run **`make ingest-enrich`** (many HTTP requests) to fill credits + prereqs from WesMaps course-detail pages.
+**Prerequisites** (Phase 2): `courses_<term>.csv` column **`prereq_groups`** — JSON array of OR-clauses, AND across clauses (e.g. `[["MATH120","MATH121"]]` means at least one of those codes if the student takes the course). **`make ingest`** writes `[]`; run **`make ingest-enrich`** (many HTTP requests) to fill credits + prereqs from WesMaps course-detail pages. The Rust kernel and Go **`legacy=1`** path enforce **transitive** closure: for each clause you must pick an alternative that appears in the schedule and whose own prerequisite groups are satisfied (so a chain like COMP300 → COMP200 → COMP112 requires all three unless prior credit is modeled elsewhere).
 
 `expected_utility` and `stress_score` are computed from `python-ml/output/meetings_1269.csv`: weekly contact time, evening load (starts from 5:00 PM), early-morning load (before 9:00 AM), back-to-back blocks (gap under 12 minutes), and busiest day. Utility is `1 - stress` after blending those signals (caps normalize each term to roughly 0–1).
 
