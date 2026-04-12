@@ -48,41 +48,63 @@ pub fn load_meetings_from_csv(path: &Path) -> Result<Vec<MeetingRecord>, String>
     Ok(rows)
 }
 
+/// Parsed meeting on one day for pairwise overlap checks (same rule as DFS pruning: `s1 < e2 && s2 < e1`).
+struct DayMeeting<'a> {
+    row: &'a MeetingRecord,
+    start_min: i32,
+    end_min: i32,
+}
+
 pub fn detect_conflicts(meetings: &[MeetingRecord], selected_sections: &[String]) -> Vec<ConflictPair> {
     let selected: HashSet<String> = selected_sections.iter().cloned().collect();
-    let mut by_day: HashMap<String, Vec<&MeetingRecord>> = HashMap::new();
+    let mut by_day: HashMap<String, Vec<DayMeeting<'_>>> = HashMap::new();
 
     for row in meetings {
-        if selected.contains(&row.section_key()) {
-            by_day.entry(row.day_code.clone()).or_default().push(row);
+        if !selected.contains(&row.section_key()) {
+            continue;
         }
+        let (start_min, end_min) = match (
+            parse_time_to_minutes(&row.start_time),
+            parse_time_to_minutes(&row.end_time),
+        ) {
+            (Ok(s), Ok(e)) => (s, e),
+            _ => continue,
+        };
+        if end_min <= start_min {
+            continue;
+        }
+        by_day.entry(row.day_code.clone()).or_default().push(DayMeeting {
+            row,
+            start_min,
+            end_min,
+        });
     }
 
     let mut conflicts = Vec::new();
 
-    for day_rows in by_day.values_mut() {
-        day_rows.sort_by_key(|row| parse_time_to_minutes(&row.start_time).unwrap_or(i32::MAX));
-
-        for i in 1..day_rows.len() {
-            let prev = day_rows[i - 1];
-            let current = day_rows[i];
-
-            let prev_end = parse_time_to_minutes(&prev.end_time).unwrap_or(-1);
-            let current_start = parse_time_to_minutes(&current.start_time).unwrap_or(-1);
-            let prev_section = prev.section_key();
-            let current_section = current.section_key();
-
-            if prev_section != current_section && current_start < prev_end {
-                conflicts.push(ConflictPair {
-                    day_code: current.day_code.clone(),
-                    day_name: current.day_name.clone(),
-                    left_section: prev_section,
-                    right_section: current_section,
-                    left_start: prev.start_time.clone(),
-                    left_end: prev.end_time.clone(),
-                    right_start: current.start_time.clone(),
-                    right_end: current.end_time.clone(),
-                });
+    for day_meetings in by_day.values() {
+        let n = day_meetings.len();
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let a = &day_meetings[i];
+                let b = &day_meetings[j];
+                let key_a = a.row.section_key();
+                let key_b = b.row.section_key();
+                if key_a == key_b {
+                    continue;
+                }
+                if a.start_min < b.end_min && b.start_min < a.end_min {
+                    conflicts.push(ConflictPair {
+                        day_code: a.row.day_code.clone(),
+                        day_name: a.row.day_name.clone(),
+                        left_section: key_a,
+                        right_section: key_b,
+                        left_start: a.row.start_time.clone(),
+                        left_end: a.row.end_time.clone(),
+                        right_start: b.row.start_time.clone(),
+                        right_end: b.row.end_time.clone(),
+                    });
+                }
             }
         }
     }
@@ -134,11 +156,22 @@ mod tests {
     use super::{detect_conflicts, parse_time_to_minutes, MeetingRecord};
 
     fn record(section: &str, day_code: &str, day_name: &str, start: &str, end: &str) -> MeetingRecord {
+        record_course("COMP112", section, day_code, day_name, start, end)
+    }
+
+    fn record_course(
+        course: &str,
+        section: &str,
+        day_code: &str,
+        day_name: &str,
+        start: &str,
+        end: &str,
+    ) -> MeetingRecord {
         MeetingRecord {
             term: "1269".to_string(),
             term_label: "Fall 2026".to_string(),
             subject_code: "COMP".to_string(),
-            course_code: "COMP112".to_string(),
+            course_code: course.to_string(),
             course_ref: "003328".to_string(),
             section: section.to_string(),
             day_code: day_code.to_string(),
@@ -168,5 +201,42 @@ mod tests {
         let conflicts = detect_conflicts(&meetings, &selected);
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].day_code, "T");
+    }
+
+    /// Three courses same day: short middle meeting overlaps only the first long block; third overlaps
+    /// the first but not the middle. A sweep that only compares consecutive starts would miss the 1st–3rd pair.
+    #[test]
+    fn detects_non_adjacent_overlaps_on_same_day() {
+        let meetings = vec![
+            record_course("COMP100", "01", "T", "Tuesday", "08:00AM", "10:00AM"),
+            record_course("COMP200", "01", "T", "Tuesday", "08:30AM", "09:00AM"),
+            record_course("COMP300", "01", "T", "Tuesday", "09:30AM", "11:00AM"),
+        ];
+        let selected = vec![
+            "COMP100-01".to_string(),
+            "COMP200-01".to_string(),
+            "COMP300-01".to_string(),
+        ];
+        let conflicts = detect_conflicts(&meetings, &selected);
+        assert_eq!(
+            conflicts.len(),
+            2,
+            "COMP100–COMP200 and COMP100–COMP300 overlap; COMP200–COMP300 do not"
+        );
+        let mut pairs: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        for c in &conflicts {
+            let a = c.left_section.clone();
+            let b = c.right_section.clone();
+            let p = if a <= b { (a, b) } else { (b, a) };
+            pairs.insert(p);
+        }
+        assert!(pairs.contains(&(
+            "COMP100-01".to_string(),
+            "COMP200-01".to_string()
+        )));
+        assert!(pairs.contains(&(
+            "COMP100-01".to_string(),
+            "COMP300-01".to_string()
+        )));
     }
 }
