@@ -21,7 +21,7 @@ Distributed academic optimization framework for course schedule optimization.
 4. Optional: legacy HTTP conflict check on kernel:
    - `curl -s "http://localhost:8090/v1/conflicts?sections=COMP112-01,COMP112-02"`
 
-The orchestrator **prefers gRPC** (`Kernel.CheckConflicts`) at `KERNEL_GRPC_ADDR` (default `localhost:50051`) and falls back to HTTP if gRPC is unavailable. Regenerate Go stubs after editing protos: `make proto-go`.
+The orchestrator **prefers gRPC** (`Kernel.CheckConflicts`, `Kernel.Optimize`) at `KERNEL_GRPC_ADDR` (default `localhost:50051`) and falls back to HTTP / **legacy** local generation if gRPC fails. A **circuit breaker** trips after repeated gRPC errors (default **5** failures, **30s** open): set **`ORCHESTRATOR_KERNEL_CB_MAX_FAILURES`** (use **`0`** to disable) and **`ORCHESTRATOR_KERNEL_CB_OPEN_SECONDS`**. Regenerate Go stubs after editing protos: `make proto-go`.
 
 With both services running, `/v1/schedules` calls the Rust kernel and filters out conflicting options.
 The orchestrator now generates candidate schedules from `python-ml/output/sections_1269.csv`.
@@ -104,7 +104,7 @@ Stop Jaeger: `make otel-jaeger-down`. You can point the same env vars at any OTL
 |------|------|------|
 | **Data** | WesMaps → CSV ingest (`make ingest`), sections/meetings for scoring, BQ load path | **`make pipeline`** + DQ (`make dq`); daily job in [`.github/workflows/data-pipeline.yml`](.github/workflows/data-pipeline.yml) |
 | **Rust kernel** | HTTP + gRPC `CheckConflicts` / `Optimize`: credits, transitive **`prereq_groups`**, bitset DFS pruning, pairwise conflict scan, Rayon, Pareto, Criterion bench | Prior-credit modeling; optional CI perf regression budget |
-| **Go orchestrator** | `/v1/schedules` (gRPC `Optimize`; `legacy=1` path matches kernel pruning/prereqs), OTLP, tests | Integration tests with running kernel; circuit breaker / cache (Phase 3) |
+| **Go orchestrator** | `/v1/schedules` (gRPC `Optimize` + **circuit breaker**; `legacy=1` path), OTLP, tests | Redis cache; integration tests with live kernel |
 | **Contracts** | `kernel.proto` (`CheckConflicts`, `Optimize`, `Health`) | Evolve as new RPCs are added |
 | **Observability** | Jaeger `docker-compose`, shared OTLP/HTTP `:4318` | Production collector / dashboards |
 | **CI** | [GitHub Actions](.github/workflows/ci.yml): Rust (`cargo test`, bench compile), Go tests, **Python `pytest`** | `buf`/`protoc` lint; optional perf gates |

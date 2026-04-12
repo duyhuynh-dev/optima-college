@@ -21,7 +21,7 @@ This document is the **structured program plan**. Last reviewed: 2026-04-11.
 | **0** | 🟡 Repo layout, `Makefile`, CI, protobuf, Jaeger + OTLP. PR template + branching in [`CONTRIBUTING.md`](../CONTRIBUTING.md). Missing: issue tracker choice, Terraform, KPI dashboard skeleton. |
 | **1** | 🟡 **Checkpoint A closed (ops).** Ingest → CSV + bronze; **GCS** `make gcs-bronze`; **BQ** + scheduled [`data-pipeline.yml`](../.github/workflows/data-pipeline.yml) + `dq_check`. Full entity DDL / alerting still future. |
 | **2** | ✅ **Checkpoint B (MVP).** Credits + **`prereq_groups`** + **transitive** prereq enforcement + **Rayon** + **Pareto** + **bitset-backed** weekly minute maps for DFS time pruning (Rust + Go legacy) + full pairwise **`detect_conflicts`** + **Criterion** bench (`cargo bench --no-run` in CI). *Out of scope for this checkpoint:* prior completed-course credit, co-reqs as first-class constraints, automated perf regression thresholds in CI. |
-| **3** | 🟡 gRPC `CheckConflicts` + `Optimize`, Go gateway, degraded **legacy** path. Missing: richer proto (weights/explanations in one shot was partially done), circuit breaker, Redis. |
+| **3** | 🟡 gRPC `CheckConflicts` + `Optimize`, Go gateway, **circuit breaker** on kernel gRPC, degraded **legacy** path. Missing: richer proto (constraints + explanations in one response), Redis cache. |
 | **4–8** | ⬜ Not started (NL intent, workload ML, frontend, pilot). |
 
 **Verdict:** Data → Rust kernel → Go API + observability matches the plan. **Phase 1 checkpoint A** met for pipeline + minimal DQ. **Phase 2 checkpoint B** is met for the **scoped MVP** (hard constraints + multi-objective slice); remaining modeling depth (prior credit, richer catalog entities, CI perf gates) is **Phase 3+ polish** or product policy, not blockers for leaving Phase 2.
@@ -101,7 +101,7 @@ This document is the **structured program plan**. Last reviewed: 2026-04-11.
 | What we do | Progress | Notes |
 |------------|----------|--------|
 | gRPC contract + service boundaries | 🟡 | `CheckConflicts`, `Optimize`, `Health`; richer “constraints + explanations” proto TBD. |
-| API gateway + fallback reliability | 🟡 | gRPC Optimize + legacy fallback; no circuit breaker / Redis cache yet. |
+| API gateway + fallback reliability | 🟡 | gRPC Optimize + legacy fallback + **kernel gRPC circuit breaker** (`internal/kernelcb`); Redis response cache still TBD. |
 
 **Checkpoint C (end Week 6):** end-to-end API + Pareto + fallback → **largely yes** for core path (minus enterprise polish).
 
@@ -196,7 +196,7 @@ This document is the **structured program plan**. Last reviewed: 2026-04-11.
 
 ## Suggested next actions (pick order)
 
-1. **Phase 3 (orchestration hardening):** circuit breaker, Redis/cache, richer proto (explanations in one response); optional **CI perf budget** for `cargo bench` if regressions become a risk.
+1. **Phase 3 (orchestration hardening):** Redis/cache, richer proto (explanations in one response); optional **CI perf budget** for `cargo bench` if regressions become a risk. *(Kernel gRPC circuit breaker: done.)*
 2. **Tighten Phase 0:** optional KPI stub (Grafana folder) when you want visibility beyond Jaeger.
 3. **Product / data depth:** prior completed-course credit in the solver; co-reqs / cross-list rules; stronger DQ or **buf**/**protoc** lint in CI.
 4. **Phase 6:** Prometheus + SLOs when you have a persistent deployment.

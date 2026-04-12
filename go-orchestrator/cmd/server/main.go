@@ -17,10 +17,14 @@ import (
 	"strings"
 	"time"
 
-	optimav1 "optima/go-orchestrator/internal/gen/optima/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	optimav1 "optima/go-orchestrator/internal/gen/optima/v1"
+	"optima/go-orchestrator/internal/kernelcb"
 )
+
+// kernelGRPCCircuit avoids hammering a dead kernel after repeated gRPC failures (Phase 3).
+var kernelGRPCCircuit = kernelcb.NewFromEnv()
 
 type ScheduleOption struct {
 	ID                    string          `json:"id"`
@@ -34,20 +38,20 @@ type ScheduleOption struct {
 
 // ScoreBreakdown is returned when debug=1; shows raw inputs and normalized terms used in stress.
 type ScoreBreakdown struct {
-	TotalMinutes    int     `json:"total_minutes"`
-	EveningMinutes  int     `json:"evening_minutes"`
-	EarlyMinutes    int     `json:"early_minutes"`
-	BackToBackPairs int     `json:"back_to_back_pairs"`
-	BusyDayMax      int     `json:"busy_day_max"`
-	MissingSections int     `json:"missing_sections"`
-	NormWeekly      float64 `json:"norm_weekly"`
-	NormEvening     float64 `json:"norm_evening"`
-	NormEarly       float64 `json:"norm_early"`
-	NormBackToBack  float64 `json:"norm_back_to_back"`
-	NormBusyDay     float64 `json:"norm_busy_day"`
-	AcademicLoad    float64 `json:"academic_load"`
+	TotalMinutes     int     `json:"total_minutes"`
+	EveningMinutes   int     `json:"evening_minutes"`
+	EarlyMinutes     int     `json:"early_minutes"`
+	BackToBackPairs  int     `json:"back_to_back_pairs"`
+	BusyDayMax       int     `json:"busy_day_max"`
+	MissingSections  int     `json:"missing_sections"`
+	NormWeekly       float64 `json:"norm_weekly"`
+	NormEvening      float64 `json:"norm_evening"`
+	NormEarly        float64 `json:"norm_early"`
+	NormBackToBack   float64 `json:"norm_back_to_back"`
+	NormBusyDay      float64 `json:"norm_busy_day"`
+	AcademicLoad     float64 `json:"academic_load"`
 	LifestylePenalty float64 `json:"lifestyle_penalty"`
-	RawStress       float64 `json:"raw_stress"`
+	RawStress        float64 `json:"raw_stress"`
 }
 
 type ScheduleResponse struct {
@@ -322,20 +326,20 @@ func scoreSchedule(sections []string, bySection map[string][]meetingBlock, weigh
 
 	if includeBreakdown {
 		breakdown = &ScoreBreakdown{
-			TotalMinutes:    int(totalMin + 0.5),
-			EveningMinutes:  int(eveningMin + 0.5),
-			EarlyMinutes:    int(earlyMin + 0.5),
-			BackToBackPairs: backToBack,
-			BusyDayMax:      busyDayMax,
-			MissingSections: missingSections,
-			NormWeekly:      roundFloat(nWeekly, 4),
-			NormEvening:     roundFloat(nEvening, 4),
-			NormEarly:       roundFloat(nEarly, 4),
-			NormBackToBack:  roundFloat(nBack, 4),
-			NormBusyDay:     roundFloat(nBusy, 4),
-			AcademicLoad:    academic,
+			TotalMinutes:     int(totalMin + 0.5),
+			EveningMinutes:   int(eveningMin + 0.5),
+			EarlyMinutes:     int(earlyMin + 0.5),
+			BackToBackPairs:  backToBack,
+			BusyDayMax:       busyDayMax,
+			MissingSections:  missingSections,
+			NormWeekly:       roundFloat(nWeekly, 4),
+			NormEvening:      roundFloat(nEvening, 4),
+			NormEarly:        roundFloat(nEarly, 4),
+			NormBackToBack:   roundFloat(nBack, 4),
+			NormBusyDay:      roundFloat(nBusy, 4),
+			AcademicLoad:     academic,
 			LifestylePenalty: lifestyle,
-			RawStress:       roundFloat(raw, 4),
+			RawStress:        roundFloat(raw, 4),
 		}
 	}
 	return stress, utility, academic, lifestyle, breakdown
@@ -966,12 +970,18 @@ func checkConflictsPreferGRPC(
 	sections []string,
 ) (bool, error) {
 	if grpcClient != nil {
-		subCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		ok, err := checkConflictsGRPC(subCtx, grpcClient, meetingsCSV, sections)
-		cancel()
+		var ok bool
+		err := kernelGRPCCircuit.Execute(func() error {
+			subCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+			var e error
+			ok, e = checkConflictsGRPC(subCtx, grpcClient, meetingsCSV, sections)
+			return e
+		})
 		if err == nil {
 			return ok, nil
 		}
+		// gRPC error or circuit open (ErrOpen): fall back to kernel HTTP conflicts check.
 	}
 	return checkConflictsHTTP(httpClient, kernelHTTP, sections)
 }
@@ -1036,12 +1046,12 @@ func buildOptimizeRequest(absSections, absMeetings string, params scheduleParams
 			WBackToBack: params.Weights.BackToBack,
 			WBusyDay:    params.Weights.BusyDay,
 		},
-		Pareto:            params.Pareto,
-		ParetoMode:        params.ParetoMode,
-		ParetoEpsilon:     params.ParetoEpsilon,
-		MaxCandidates:     2000,
-		MinTotalCredits:   params.MinTotalCredits,
-		MaxTotalCredits:   params.MaxTotalCredits,
+		Pareto:          params.Pareto,
+		ParetoMode:      params.ParetoMode,
+		ParetoEpsilon:   params.ParetoEpsilon,
+		MaxCandidates:   2000,
+		MinTotalCredits: params.MinTotalCredits,
+		MaxTotalCredits: params.MaxTotalCredits,
 	}
 }
 
@@ -1077,8 +1087,19 @@ func schedulesHandler(w http.ResponseWriter, r *http.Request) {
 		req := buildOptimizeRequest(absSections, absMeetings, params)
 		optCtx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 		defer cancel()
-		out, err := grpcClient.Optimize(optCtx, req)
-		if err == nil && out.GetStatus() == "ok" {
+		var out *optimav1.OptimizeResponse
+		err := kernelGRPCCircuit.Execute(func() error {
+			var inner error
+			out, inner = grpcClient.Optimize(optCtx, req)
+			if inner != nil {
+				return inner
+			}
+			if out.GetStatus() != "ok" {
+				return fmt.Errorf("kernel optimize status %q", out.GetStatus())
+			}
+			return nil
+		})
+		if err == nil {
 			weights := params.Weights
 			if ew := out.GetEffectiveWeights(); ew != nil {
 				weights = scoreWeightsFromProto(ew)
@@ -1086,13 +1107,13 @@ func schedulesHandler(w http.ResponseWriter, r *http.Request) {
 			reason := out.GetReason()
 			resp := ScheduleResponse{
 				GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
-				Source:            "orchestrator+kernel",
-				Options:           mapProtoScheduleOptions(out.GetOptions()),
-				KernelReachable:   true,
-				Reason:            reason,
-				ScoreWeights:      weights,
-				Debug:             params.Debug,
-				Pareto:            params.Pareto,
+				Source:          "orchestrator+kernel",
+				Options:         mapProtoScheduleOptions(out.GetOptions()),
+				KernelReachable: true,
+				Reason:          reason,
+				ScoreWeights:    weights,
+				Debug:           params.Debug,
+				Pareto:          params.Pareto,
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(resp)
