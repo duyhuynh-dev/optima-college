@@ -44,6 +44,76 @@ func chdirGoOrchestrator(t *testing.T) (restore func()) {
 	}
 }
 
+func TestIntervalsOverlap(t *testing.T) {
+	t.Parallel()
+	if !intervalsOverlap(530, 610, 570, 620) {
+		t.Fatal("expected overlapping Tuesday blocks to clash")
+	}
+	if intervalsOverlap(480, 540, 540, 600) {
+		t.Fatal("back-to-back should not overlap")
+	}
+}
+
+func TestBlocksTimeConflict(t *testing.T) {
+	t.Parallel()
+	existing := []meetingBlock{{DayCode: "T", StartMin: 530, EndMin: 610}}
+	if !blocksTimeConflict(existing, []meetingBlock{{DayCode: "T", StartMin: 570, EndMin: 620}}) {
+		t.Fatal("expected overlap on same day")
+	}
+	if blocksTimeConflict(existing, []meetingBlock{{DayCode: "T", StartMin: 620, EndMin: 660}}) {
+		t.Fatal("non-overlapping same day should pass")
+	}
+	if blocksTimeConflict(existing, []meetingBlock{{DayCode: "R", StartMin: 570, EndMin: 620}}) {
+		t.Fatal("different day should pass")
+	}
+}
+
+func TestBuildCombinationalCandidates_PruneTimeOverlap(t *testing.T) {
+	t.Parallel()
+	rows := []sectionRow{
+		{SubjectCode: "COMP", CourseCode: "COMP100", Section: "01", Credits: 1},
+		{SubjectCode: "COMP", CourseCode: "COMP101", Section: "01", Credits: 1},
+		{SubjectCode: "MATH", CourseCode: "MATH121", Section: "01", Credits: 1},
+	}
+	by := map[string][]meetingBlock{
+		"COMP100-01": {{DayCode: "T", StartMin: 530, EndMin: 610}},
+		"COMP101-01": {{DayCode: "T", StartMin: 570, EndMin: 620}},
+		"MATH121-01": {{DayCode: "W", StartMin: 600, EndMin: 660}},
+	}
+	starts := map[string]int{
+		"COMP100-01": 530,
+		"COMP101-01": 570,
+		"MATH121-01": 600,
+	}
+	opts := buildCombinationalCandidates(rows, 2, 50, 0, 2, starts, by, 0, 0, nil)
+	var has100_121, has101_121, has100_101 bool
+	for _, o := range opts {
+		set := map[string]struct{}{}
+		for _, s := range o.Sections {
+			set[s] = struct{}{}
+		}
+		if _, a := set["COMP100-01"]; a {
+			if _, b := set["MATH121-01"]; b {
+				has100_121 = true
+			}
+			if _, b := set["COMP101-01"]; b {
+				has100_101 = true
+			}
+		}
+		if _, a := set["COMP101-01"]; a {
+			if _, b := set["MATH121-01"]; b {
+				has101_121 = true
+			}
+		}
+	}
+	if !has100_121 || !has101_121 {
+		t.Fatalf("expected non-overlapping pairs with MATH121, got opts=%d", len(opts))
+	}
+	if has100_101 {
+		t.Fatal("COMP100 + COMP101 overlap on Tuesday and should be pruned")
+	}
+}
+
 func TestPassesPrereqs_TransitiveChain(t *testing.T) {
 	t.Parallel()
 	pg := map[string][][]string{

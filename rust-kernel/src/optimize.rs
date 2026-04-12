@@ -293,6 +293,24 @@ fn section_passes_earliest(section_id: &str, earliest: i32, starts: &HashMap<Str
     starts.get(section_id).copied().unwrap_or(0) >= earliest
 }
 
+/// Half-open-style overlap consistent with kernel conflict scan: intervals clash iff each starts before the other ends.
+#[inline]
+fn meeting_intervals_overlap(s1: i32, e1: i32, s2: i32, e2: i32) -> bool {
+    s1 < e2 && s2 < e1
+}
+
+/// True if any meeting on `new_blocks` overlaps any meeting already placed (same `day_code`).
+fn blocks_time_conflict(existing: &[MeetingBlock], new_blocks: &[MeetingBlock]) -> bool {
+    for a in existing {
+        for b in new_blocks {
+            if a.day_code == b.day_code && meeting_intervals_overlap(a.start_min, a.end_min, b.start_min, b.end_min) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn stack_total_credits(stack: &[SectionRow]) -> f64 {
     stack.iter().map(|r| r.credits).sum()
 }
@@ -342,11 +360,13 @@ fn dfs_collect(
     earliest_start: i32,
     max_per_subject: usize,
     starts: &HashMap<String, i32>,
+    meetings_by_section: &HashMap<String, Vec<MeetingBlock>>,
     min_total_credits: f64,
     max_total_credits: f64,
     prereqs: &HashMap<String, Vec<Vec<String>>>,
     start: usize,
     stack: &mut Vec<SectionRow>,
+    stack_meetings: &mut Vec<MeetingBlock>,
     results: &mut Vec<ScheduleOption>,
     seen: &mut HashSet<String>,
 ) {
@@ -356,11 +376,7 @@ fn dfs_collect(
     if stack.len() == k {
         let mut sections = Vec::with_capacity(k);
         for row in stack.iter() {
-            let section_id = format!("{}-{}", row.course_code, row.section);
-            if !section_passes_earliest(&section_id, earliest_start, starts) {
-                return;
-            }
-            sections.push(section_id);
+            sections.push(format!("{}-{}", row.course_code, row.section));
         }
         if !passes_credit_bounds(stack_total_credits(stack), min_total_credits, max_total_credits) {
             return;
@@ -403,6 +419,19 @@ fn dfs_collect(
         if subject_counts.get(&row.subject_code).copied().unwrap_or(0) >= max_per_subject {
             continue;
         }
+        let section_id = format!("{}-{}", row.course_code, row.section);
+        if !section_passes_earliest(&section_id, earliest_start, starts) {
+            continue;
+        }
+        let new_blocks: &[MeetingBlock] = meetings_by_section
+            .get(&section_id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+        if blocks_time_conflict(stack_meetings, new_blocks) {
+            continue;
+        }
+        let prev_m = stack_meetings.len();
+        stack_meetings.extend_from_slice(new_blocks);
         stack.push(row.clone());
         dfs_collect(
             pool,
@@ -411,15 +440,18 @@ fn dfs_collect(
             earliest_start,
             max_per_subject,
             starts,
+            meetings_by_section,
             min_total_credits,
             max_total_credits,
             prereqs,
             i + 1,
             stack,
+            stack_meetings,
             results,
             seen,
         );
         stack.pop();
+        stack_meetings.truncate(prev_m);
         if results.len() >= max_candidates {
             return;
         }
@@ -434,12 +466,14 @@ fn candidates_for_seed(
     earliest_start: i32,
     max_per_subject: usize,
     starts: &HashMap<String, i32>,
+    meetings_by_section: &HashMap<String, Vec<MeetingBlock>>,
     min_total_credits: f64,
     max_total_credits: f64,
     prereqs: &HashMap<String, Vec<Vec<String>>>,
 ) -> Vec<ScheduleOption> {
     let pool = rotate_rows(rows, seed);
     let mut stack: Vec<SectionRow> = Vec::with_capacity(k);
+    let mut stack_meetings: Vec<MeetingBlock> = Vec::new();
     let mut results: Vec<ScheduleOption> = Vec::with_capacity(max_candidates.min(256));
     let mut seen: HashSet<String> = HashSet::with_capacity(max_candidates);
     dfs_collect(
@@ -449,11 +483,13 @@ fn candidates_for_seed(
         earliest_start,
         max_per_subject,
         starts,
+        meetings_by_section,
         min_total_credits,
         max_total_credits,
         prereqs,
         0,
         &mut stack,
+        &mut stack_meetings,
         &mut results,
         &mut seen,
     );
@@ -467,6 +503,7 @@ fn build_combinational_candidates(
     earliest_start: i32,
     max_per_subject: usize,
     starts: &HashMap<String, i32>,
+    meetings_by_section: &HashMap<String, Vec<MeetingBlock>>,
     min_total_credits: f64,
     max_total_credits: f64,
     prereqs: &HashMap<String, Vec<Vec<String>>>,
@@ -494,6 +531,7 @@ fn build_combinational_candidates(
                 earliest_start,
                 max_per_subject,
                 starts,
+                meetings_by_section,
                 min_total_credits,
                 max_total_credits,
                 prereqs,
@@ -790,6 +828,7 @@ pub fn run_optimize(
         earliest,
         max_per_subject,
         &start_times,
+        &meetings_by_section,
         min_cr,
         max_cr,
         &prereq_map,
@@ -961,5 +1000,91 @@ mod credit_bounds_tests {
         m.insert("B".into(), vec![vec!["A".into()]]);
         let sel: HashSet<String> = ["A", "B"].iter().map(|s| s.to_string()).collect();
         assert!(!schedule_satisfies_prereq_groups(&sel, &m));
+    }
+}
+
+#[cfg(test)]
+mod interval_prune_tests {
+    use super::*;
+
+    fn blk(day: &str, s: i32, e: i32) -> MeetingBlock {
+        MeetingBlock {
+            day_code: day.into(),
+            start_min: s,
+            end_min: e,
+        }
+    }
+
+    #[test]
+    fn meeting_intervals_overlap_matches_conflict_semantics() {
+        assert!(meeting_intervals_overlap(530, 610, 570, 620)); // 8:50–10:10 vs 9:30–10:20
+        assert!(!meeting_intervals_overlap(480, 540, 540, 600)); // adjacent: 8:00–9:00 vs 9:00–10:00
+        assert!(!meeting_intervals_overlap(480, 540, 600, 660)); // different bands same day
+    }
+
+    #[test]
+    fn blocks_time_conflict_respects_day_and_overlap() {
+        let existing = vec![blk("T", 530, 610)];
+        assert!(blocks_time_conflict(&existing, &[blk("T", 570, 620)]));
+        assert!(!blocks_time_conflict(&existing, &[blk("T", 620, 660)]));
+        assert!(!blocks_time_conflict(&existing, &[blk("R", 570, 620)]));
+    }
+
+    #[test]
+    fn dfs_prunes_time_overlapping_sections() {
+        let rows = vec![
+            SectionRow {
+                subject_code: "COMP".into(),
+                course_code: "COMP100".into(),
+                section: "01".into(),
+                credits: 1.0,
+            },
+            SectionRow {
+                subject_code: "COMP".into(),
+                course_code: "COMP101".into(),
+                section: "01".into(),
+                credits: 1.0,
+            },
+            SectionRow {
+                subject_code: "MATH".into(),
+                course_code: "MATH121".into(),
+                section: "01".into(),
+                credits: 1.0,
+            },
+        ];
+        let mut meetings_by_section: HashMap<String, Vec<MeetingBlock>> = HashMap::new();
+        meetings_by_section.insert(
+            "COMP100-01".into(),
+            vec![blk("T", 530, 610)],
+        );
+        meetings_by_section.insert(
+            "COMP101-01".into(),
+            vec![blk("T", 570, 620)],
+        );
+        meetings_by_section.insert("MATH121-01".into(), vec![blk("W", 600, 660)]);
+        let starts: HashMap<String, i32> = [
+            ("COMP100-01".into(), 530),
+            ("COMP101-01".into(), 570),
+            ("MATH121-01".into(), 600),
+        ]
+        .into_iter()
+        .collect();
+        let prereqs: HashMap<String, Vec<Vec<String>>> = HashMap::new();
+        let opts = build_combinational_candidates(
+            &rows,
+            2,
+            50,
+            0,
+            2,
+            &starts,
+            &meetings_by_section,
+            0.0,
+            0.0,
+            &prereqs,
+        );
+        let keys: Vec<String> = opts.iter().map(|o| o.sections.join("|")).collect();
+        assert!(keys.iter().any(|k| k.contains("COMP100") && k.contains("MATH121")));
+        assert!(keys.iter().any(|k| k.contains("COMP101") && k.contains("MATH121")));
+        assert!(!keys.iter().any(|k| k.contains("COMP100") && k.contains("COMP101")));
     }
 }

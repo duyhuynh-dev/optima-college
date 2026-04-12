@@ -607,6 +607,22 @@ func sectionPassesEarliestStart(sectionID string, earliestStart int, starts map[
 	return start >= earliestStart
 }
 
+// intervalsOverlap matches kernel DFS pruning: two meetings clash iff each starts before the other ends.
+func intervalsOverlap(s1, e1, s2, e2 int) bool {
+	return s1 < e2 && s2 < e1
+}
+
+func blocksTimeConflict(existing, newBlocks []meetingBlock) bool {
+	for _, a := range existing {
+		for _, b := range newBlocks {
+			if a.DayCode == b.DayCode && intervalsOverlap(a.StartMin, a.EndMin, b.StartMin, b.EndMin) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func rotateRows(rows []sectionRow, offset int) []sectionRow {
 	if len(rows) == 0 {
 		return rows
@@ -785,7 +801,7 @@ func coursePrereqsTransitiveVisit(course string, selected map[string]struct{}, p
 	return true
 }
 
-func buildCombinationalCandidates(rows []sectionRow, k, maxCandidates int, earliestStart int, maxPerSubject int, starts map[string]int, minTotalCredits, maxTotalCredits float64, prereqGroups map[string][][]string) []ScheduleOption {
+func buildCombinationalCandidates(rows []sectionRow, k, maxCandidates int, earliestStart int, maxPerSubject int, starts map[string]int, bySection map[string][]meetingBlock, minTotalCredits, maxTotalCredits float64, prereqGroups map[string][][]string) []ScheduleOption {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -796,6 +812,7 @@ func buildCombinationalCandidates(rows []sectionRow, k, maxCandidates int, earli
 	for _, seed := range seeds {
 		pool := rotateRows(rows, seed)
 		stack := make([]sectionRow, 0, k)
+		stackMeetings := make([]meetingBlock, 0, k*6)
 
 		var dfs func(start int)
 		dfs = func(start int) {
@@ -805,11 +822,7 @@ func buildCombinationalCandidates(rows []sectionRow, k, maxCandidates int, earli
 			if len(stack) == k {
 				sections := make([]string, 0, k)
 				for _, row := range stack {
-					sectionID := row.CourseCode + "-" + row.Section
-					if !sectionPassesEarliestStart(sectionID, earliestStart, starts) {
-						return
-					}
-					sections = append(sections, sectionID)
+					sections = append(sections, row.CourseCode+"-"+row.Section)
 				}
 				if !passesCreditBounds(stackTotalCredits(stack), minTotalCredits, maxTotalCredits) {
 					return
@@ -841,9 +854,20 @@ func buildCombinationalCandidates(rows []sectionRow, k, maxCandidates int, earli
 				if subjectCounts[row.SubjectCode] >= maxPerSubject {
 					continue
 				}
+				sectionID := row.CourseCode + "-" + row.Section
+				if !sectionPassesEarliestStart(sectionID, earliestStart, starts) {
+					continue
+				}
+				newBlocks := bySection[sectionID]
+				if blocksTimeConflict(stackMeetings, newBlocks) {
+					continue
+				}
+				prevM := len(stackMeetings)
+				stackMeetings = append(stackMeetings, newBlocks...)
 				stack = append(stack, row)
 				dfs(i + 1)
 				stack = stack[:len(stack)-1]
+				stackMeetings = stackMeetings[:prevM]
 				if len(results) >= maxCandidates {
 					return
 				}
@@ -1116,7 +1140,7 @@ func schedulesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	prereqMap := loadPrereqGroups(companionCoursesCSVPath(sectionsPath))
-	candidateOptions := buildCombinationalCandidates(rows, params.K, 2000, params.EarliestStart, params.MaxPerSubject, startTimes, params.MinTotalCredits, params.MaxTotalCredits, prereqMap)
+	candidateOptions := buildCombinationalCandidates(rows, params.K, 2000, params.EarliestStart, params.MaxPerSubject, startTimes, meetingsBySection, params.MinTotalCredits, params.MaxTotalCredits, prereqMap)
 	if len(candidateOptions) == 0 {
 		resp := ScheduleResponse{
 			GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
